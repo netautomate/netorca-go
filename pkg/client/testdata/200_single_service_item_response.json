@@ -1,0 +1,61 @@
+{
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": 35,
+            "url": "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/service_items/35/",
+            "name": "fastapi-app17",
+            "created": "2025-04-09T11:11:04.194909Z",
+            "modified": "2025-04-09T11:18:46.902227Z",
+            "runtime_state": "IN_SERVICE",
+            "service": {
+                "id": 4,
+                "name": "THREE_TIER_APPLICATION",
+                "owner": {
+                    "id": 4,
+                    "name": "AWS"
+                },
+                "state": "IN_SERVICE",
+                "healthcheck": false
+            },
+            "application": {
+                "id": 23,
+                "name": "app17",
+                "metadata": {
+                    "owner": "team5@example.com",
+                    "description": "My fastApi application17",
+                    "environment": "DEV"
+                },
+                "owner": 2
+            },
+            "related": null,
+            "service_owner_team": {
+                "id": 4,
+                "name": "AWS"
+            },
+            "consumer_team": {
+                "id": 2,
+                "name": "beta",
+                "metadata": {
+                    "team_name": "beta"
+                }
+            },
+            "change_state": "CHANGES_APPROVED",
+            "deployed_item": {},
+            "declaration": {
+                "name": "fastapi-app17",
+                "size": "small",
+                "image": "ami-02141377eee7defb91",
+                "owner": "beta11111@test.com",
+                "description": "fastapi app for beta",
+                "environment": "dev"
+            },
+            "healthcheck_status": null,
+            "is_validated_minimum_schema": false,
+            "is_deprecated_service_schema": false,
+            "is_service_private": false
+        }
+    ]
+}
