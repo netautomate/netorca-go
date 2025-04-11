@@ -3,6 +3,7 @@ module github.com/netautomate/netorca-go
 go 1.24.0
 
 require (
+	github.com/jarcoal/httpmock v1.4.0
 	github.com/joho/godotenv v1.5.1
 	github.com/stretchr/testify v1.10.0
 )
