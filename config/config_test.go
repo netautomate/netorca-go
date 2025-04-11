@@ -11,8 +11,8 @@ func TestLoadConfig(t *testing.T) {
 	// Load the configuration from the .env file
 	cfg := config.LoadConfig("testdata/.env_example")
 
-	assert.Equal(t, cfg.APIKey, "11.12312312312")
-	assert.Equal(t, cfg.BaseURL, "https://api.example.com")
-	assert.Equal(t, cfg.APIVersion, "v1")
-	assert.Equal(t, cfg.RequestTimeout, 15)
+	assert.Equal(t, "11.12312312312", cfg.APIKey)
+	assert.Equal(t, "https://api.example.com", cfg.BaseURL)
+	assert.Equal(t, "v1", cfg.APIVersion)
+	assert.Equal(t, 15, cfg.RequestTimeout)
 }
