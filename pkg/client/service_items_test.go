@@ -1,3 +1,4 @@
+//nolint:dupl
 package client_test
 
 import (

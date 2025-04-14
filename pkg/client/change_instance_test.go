@@ -1,3 +1,4 @@
+//nolint:dupl
 package client_test
 
 import (
@@ -76,7 +77,7 @@ func TestChangeInstancesToQueryParams(t *testing.T) {
 	}
 }
 
-func exampleChangeInstance() *client.ChangeInstance {
+func exampleChangeInstance() *client.ChangeInstance { //nolint:funlen
 	// Example response from the API: testdata/200_single_change_instance_response.json
 
 	return &client.ChangeInstance{
@@ -254,9 +255,7 @@ func TestClientChangeInstances(t *testing.T) { //nolint:funlen
 		assert.Equal(t, expectedCI.ServiceItem.ID, changeInstances.Results[0].ServiceItem.ID)
 		assert.Equal(t, expectedCI.ServiceItem.RuntimeState, changeInstances.Results[0].ServiceItem.RuntimeState)
 		assert.Equal(t, expectedCI.ServiceItem.Name, changeInstances.Results[0].ServiceItem.Name)
-
 	})
-
 	t.Run("Test GetChangeInstances returns error on 500", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
@@ -310,5 +309,4 @@ func TestClientChangeInstances(t *testing.T) { //nolint:funlen
 		assert.Equal(t, "failed to get change instances: 400 Bad Request", err.Error())
 	},
 	)
-
 }
