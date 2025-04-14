@@ -148,7 +148,7 @@ func exampleChangeInstance() *client.ChangeInstance { //nolint:funlen
 	}
 }
 
-func TestClientChangeInstances(t *testing.T) { //nolint:funlen
+func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 	// Test responses with mocked HTTP requests
 	// Responses are mocked using httpmock
 	t.Run("Test NewClient returns empty response with 200 when no filters matched", func(t *testing.T) {
@@ -185,8 +185,7 @@ func TestClientChangeInstances(t *testing.T) { //nolint:funlen
 		assert.Nil(t, changeInstances.Next)
 		assert.Nil(t, changeInstances.Previous)
 	})
-
-	t.Run("Test GetChangeInstances returns services list on success", func(t *testing.T) {
+	t.Run("Test GetChangeInstances when api responds with 200 with single record", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
 		// Register a mock response for the GET request with real data
@@ -256,7 +255,7 @@ func TestClientChangeInstances(t *testing.T) { //nolint:funlen
 		assert.Equal(t, expectedCI.ServiceItem.RuntimeState, changeInstances.Results[0].ServiceItem.RuntimeState)
 		assert.Equal(t, expectedCI.ServiceItem.Name, changeInstances.Results[0].ServiceItem.Name)
 	})
-	t.Run("Test GetChangeInstances returns error on 500", func(t *testing.T) {
+	t.Run("Test GetChangeInstances when api responds with 500", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
 		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances",
@@ -282,7 +281,7 @@ func TestClientChangeInstances(t *testing.T) { //nolint:funlen
 		assert.Nil(t, changeInstances)
 		assert.Equal(t, "failed to get change instances: 500 Internal Server Error", err.Error())
 	})
-	t.Run("Test GetChangeInstances returns error on 400", func(t *testing.T) {
+	t.Run("Test GetChangeInstances when api responds with 400", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
 		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances",
@@ -309,4 +308,342 @@ func TestClientChangeInstances(t *testing.T) { //nolint:funlen
 		assert.Equal(t, "failed to get change instances: 400 Bad Request", err.Error())
 	},
 	)
+}
+
+func TestClientApproveChangeInstance(t *testing.T) { //nolint:funlen
+	t.Run("Test ApproveChangeInstance when api responds with 500", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(500, `{"error": "Internal Server Error"}`),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.ApproveChangeInstance(53, "test log", json.RawMessage(`{"comment": "approved"}`))
+
+		require.Error(t, err)
+		assert.Nil(t, changeInstance)
+	})
+	t.Run("Test ApproveChangeInstance when api responds with 400", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(400, `{"error": "Bad Request"}`),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.ApproveChangeInstance(53, "test log", json.RawMessage(`{"comment": "approved"}`))
+
+		require.Error(t, err)
+		assert.Nil(t, changeInstance)
+	})
+	t.Run("Test ApproveChangeInstance when api responds with 200", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		testFileContent := readTestFile(t, "200_APPROVE_single_change_instance_response.json")
+
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(200, testFileContent),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.CompleteChangeInstance(53, "test log", json.RawMessage(`{"comment": "approved"}`))
+		require.NoError(t, err)
+		assert.NotNil(t, changeInstance)
+		assert.NotEqual(t, client.ChangeInstance{}, *changeInstance)
+		assert.Equal(t, 53, changeInstance.ID)
+		assert.Equal(t, "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/", changeInstance.URL)
+		assert.Equal(t, string(client.ChangeInstanceAPPROVED), changeInstance.State)
+		assert.Equal(t, "test log", changeInstance.Log)
+		assert.JSONEq(t, `{"comment":"approved"}`, string(changeInstance.ServiceItem.DeployedItem))
+	})
+}
+
+func TestClientCompleteChangeInstance(t *testing.T) { //nolint:funlen
+	t.Run("Test CompleteChangeInstance when api responds with 500", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(500, `{"error": "Internal Server Error"}`),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.CompleteChangeInstance(53, "test log", json.RawMessage(`{"comment": "completed"}`))
+
+		require.Error(t, err)
+		assert.Nil(t, changeInstance)
+	})
+	t.Run("Test CompleteChangeInstance when api responds with 400", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(400, `{"error": "Bad Request"}`),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.CompleteChangeInstance(53, "test log", json.RawMessage(`{"comment": "completed"}`))
+
+		require.Error(t, err)
+		assert.Nil(t, changeInstance)
+	})
+	t.Run("Test CompleteChangeInstance when api responds with 200", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		testFileContent := readTestFile(t, "200_COMPLETE_single_change_instance_response.json")
+
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(200, testFileContent),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.CompleteChangeInstance(53, "test log", json.RawMessage(`{"comment": "completed"}`))
+		require.NoError(t, err)
+		assert.NotNil(t, changeInstance)
+		assert.NotEqual(t, client.ChangeInstance{}, *changeInstance)
+		assert.Equal(t, 53, changeInstance.ID)
+		assert.Equal(t, "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/", changeInstance.URL)
+		assert.Equal(t, string(client.ChangeInstanceCOMPLETED), changeInstance.State)
+		assert.Equal(t, "test log", changeInstance.Log)
+		assert.JSONEq(t, `{"comment":"completed"}`, string(changeInstance.ServiceItem.DeployedItem))
+	})
+}
+
+func TestClientCloseChangeInstance(t *testing.T) { //nolint:funlen
+	t.Run("Test CloseChangeInstance when api responds with 500", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(500, `{"error": "Internal Server Error"}`),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.CloseChangeInstance(53, "test log", json.RawMessage(`{"comment": "closed"}`))
+
+		require.Error(t, err)
+		assert.Nil(t, changeInstance)
+	})
+	t.Run("Test CloseChangeInstance when api responds with 400", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(400, `{"error": "Bad Request"}`),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.CloseChangeInstance(53, "test log", json.RawMessage(`{"comment": "closed"}`))
+
+		require.Error(t, err)
+		assert.Nil(t, changeInstance)
+	})
+	t.Run("Test CloseChangeInstance when api responds with 200", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		testFileContent := readTestFile(t, "200_CLOSE_single_change_instance_response.json")
+
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(200, testFileContent),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.CompleteChangeInstance(53, "test log", json.RawMessage(`{"comment": "closed"}`))
+		require.NoError(t, err)
+		assert.NotNil(t, changeInstance)
+		assert.NotEqual(t, client.ChangeInstance{}, *changeInstance)
+		assert.Equal(t, 53, changeInstance.ID)
+		assert.Equal(t, "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/", changeInstance.URL)
+		assert.Equal(t, string(client.ChangeInstanceCLOSED), changeInstance.State)
+		assert.Equal(t, "test log", changeInstance.Log)
+		assert.JSONEq(t, `{"comment":"closed"}`, string(changeInstance.ServiceItem.DeployedItem))
+	})
+}
+
+func TestClientRejectChangeInstance(t *testing.T) { //nolint:funlen
+	t.Run("Test RejectChangeInstance when api responds with 500", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(500, `{"error": "Internal Server Error"}`),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.RejectChangeInstance(53, "test log", json.RawMessage(`{"comment": "rejected"}`))
+
+		require.Error(t, err)
+		assert.Nil(t, changeInstance)
+	})
+	t.Run("Test RejectChangeInstance when api responds with 400", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(400, `{"error": "Bad Request"}`),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.RejectChangeInstance(53, "test log", json.RawMessage(`{"comment": "rejected"}`))
+
+		require.Error(t, err)
+		assert.Nil(t, changeInstance)
+	})
+	t.Run("Test CompleteChangeInstance when api responds with 200", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		testFileContent := readTestFile(t, "200_REJECT_single_change_instance_response.json")
+
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(200, testFileContent),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.RejectChangeInstance(53, "test log", json.RawMessage(`{"comment": "rejected"}`))
+		require.NoError(t, err)
+		assert.NotNil(t, changeInstance)
+		assert.NotEqual(t, client.ChangeInstance{}, *changeInstance)
+		assert.Equal(t, 53, changeInstance.ID)
+		assert.Equal(t, "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/", changeInstance.URL)
+		assert.Equal(t, string(client.ChangeInstanceREJECTED), changeInstance.State)
+		assert.Equal(t, "test log", changeInstance.Log)
+		assert.JSONEq(t, `{"comment":"rejected"}`, string(changeInstance.ServiceItem.DeployedItem))
+	})
+}
+
+func TestClientSetErrorChangeInstance(t *testing.T) { //nolint:funlen
+	t.Run("Test CompleteChangeInstance when api responds with 500", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(500, `{"error": "Internal Server Error"}`),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.SetErrorChangeInstance(53, "test log", json.RawMessage(`{"comment": "error"}`))
+
+		require.Error(t, err)
+		assert.Nil(t, changeInstance)
+	})
+	t.Run("Test CompleteChangeInstance when api responds with 400", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(400, `{"error": "Bad Request"}`),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+		changeInstance, err := nc.SetErrorChangeInstance(53, "test log", json.RawMessage(`{"comment": "error"}`))
+		require.Error(t, err)
+		assert.Nil(t, changeInstance)
+		assert.Equal(
+			t,
+			`failed to update change instance state. Details: 400 Bad Request, {"error": "Bad Request"}`,
+			err.Error(),
+		)
+	})
+	t.Run("Test CompleteChangeInstance when api responds with 200", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+		testFileContent := readTestFile(t, "200_ERROR_single_change_instance_response.json")
+
+		httpmock.RegisterResponder("PATCH", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/",
+			httpmock.NewStringResponder(200, testFileContent),
+		)
+		cfg := config.Config{
+			BaseURL:    "http://api-aws.demo.netorca.io",
+			APIKey:     "test-api-key",
+			APIVersion: "v1",
+		}
+		nc, err := client.NewClient(cfg.BaseURL, cfg.APIKey, cfg.APIVersion, 5*time.Second)
+		require.NoError(t, err)
+
+		changeInstance, err := nc.SetErrorChangeInstance(53, "test log", json.RawMessage(`{"comment": "error"}`))
+		require.NoError(t, err)
+		assert.NotNil(t, changeInstance)
+		assert.NotEqual(t, client.ChangeInstance{}, *changeInstance)
+		assert.Equal(t, 53, changeInstance.ID)
+		assert.Equal(t, "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/", changeInstance.URL)
+		assert.Equal(t, string(client.ChangeInstanceERROR), changeInstance.State)
+		assert.Equal(t, "test log", changeInstance.Log)
+		assert.JSONEq(t, `{"comment":"error"}`, string(changeInstance.ServiceItem.DeployedItem))
+	})
 }

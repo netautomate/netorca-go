@@ -1,14 +1,28 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
+)
+
+// ChangeInstanceState represents the state of a change instance.
+type ChangeInstanceState string
+
+const (
+	ChangeInstanceERROR     ChangeInstanceState = "ERROR"
+	ChangeInstancePENDING   ChangeInstanceState = "PENDING"
+	ChangeInstanceAPPROVED  ChangeInstanceState = "APPROVED"
+	ChangeInstanceCOMPLETED ChangeInstanceState = "COMPLETED"
+	ChangeInstanceCLOSED    ChangeInstanceState = "CLOSED"
+	ChangeInstanceREJECTED  ChangeInstanceState = "REJECTED"
 )
 
 // GetChangeInstancesRequest represents the filters for change instances.
@@ -159,9 +173,9 @@ type ChangeInstance struct {
 	IsDependant bool `json:"is_dependant"`
 	// OldDeclaration is the old declaration associated with the change instance.
 	OldDeclaration *Declaration `json:"old_declaration"`
-	// DeployedItem is the deployed item associated with the change instance.
-	DeployedItem json.RawMessage `json:"deployed_item"`
 }
+
+// Submission represents the submission associated with the change instance.
 type Submission struct {
 	// ID is the unique identifier for the submission.
 	ID int `json:"id"`
@@ -169,11 +183,28 @@ type Submission struct {
 	CommitID string `json:"commit_id"`
 }
 
+// Declaration represents the JSON declaration associated with the change instance.
+type Declaration struct {
+	// Version is the unique identifier for the declaration (autoincremented).
+	Version int `json:"version"`
+	// Declaration is the JSON declaration associated with the change instance.
+	Declaration json.RawMessage `json:"declaration"`
+}
 type ChangeInstanceService struct {
 	ID                    int    `json:"id"`
 	Name                  string `json:"name"`
 	AllowManualApproval   bool   `json:"allow_manual_approval"`
 	AllowManualCompletion bool   `json:"allow_manual_completion"`
+}
+
+type UpdateChangeInstanceRequest struct {
+
+	// State is the new state of the change instance (e.g., "APPROVED", "REJECTED").
+	State ChangeInstanceState `json:"state"`
+	// Log is a string containing the log or message associated with the change instance.
+	Log string `json:"log"`
+	// DeployedItem is the deployed item associated with the change instance.
+	DeployedItem json.RawMessage `json:"deployed_item"`
 }
 
 // GetChangeInstances is a method on Client that fetches change instances from the API using
@@ -231,9 +262,97 @@ func (c *Client) GetChangeInstances(filters *GetChangeInstancesRequest) (*GetCha
 	return &response, nil
 }
 
-type Declaration struct {
-	// Version is the unique identifier for the declaration (autoincremented).
-	Version int `json:"version"`
-	// Declaration is the JSON declaration associated with the change instance.
-	Declaration json.RawMessage `json:"declaration"`
+// ApproveChangeInstance approves a change instance by updating its state to "APPROVED".
+func (c *Client) ApproveChangeInstance(id int, logStr string, deployedItem json.RawMessage) (*ChangeInstance, error) {
+	return c.updateChangeInstanceState(id, ChangeInstanceAPPROVED, logStr, deployedItem)
+}
+
+// RejectChangeInstance rejects a change instance by updating its state to "REJECTED".
+func (c *Client) RejectChangeInstance(id int, logStr string, deployedItem json.RawMessage) (*ChangeInstance, error) {
+	return c.updateChangeInstanceState(id, ChangeInstanceREJECTED, logStr, deployedItem)
+}
+
+// CompleteChangeInstance completes a change instance by updating its state to "COMPLETED".
+func (c *Client) CompleteChangeInstance(id int, logStr string, deployedItem json.RawMessage) (*ChangeInstance, error) {
+	return c.updateChangeInstanceState(id, ChangeInstanceCOMPLETED, logStr, deployedItem)
+}
+
+// CloseChangeInstance closes a change instance by updating its state to "CLOSED".
+func (c *Client) CloseChangeInstance(id int, logStr string, deployedItem json.RawMessage) (*ChangeInstance, error) {
+	return c.updateChangeInstanceState(id, ChangeInstanceCLOSED, logStr, deployedItem)
+}
+
+// SetErrorChangeInstance sets the error state for a change instance by updating its state to "ERROR".
+func (c *Client) SetErrorChangeInstance(id int, logStr string, deployedItem json.RawMessage) (*ChangeInstance, error) {
+	return c.updateChangeInstanceState(id, ChangeInstanceERROR, logStr, deployedItem)
+}
+
+// PendingChangeInstance sets the pending state for a change instance by updating its state to "PENDING".
+func (c *Client) PendingChangeInstance(id int, logStr string, deployedItem json.RawMessage) (*ChangeInstance, error) {
+	return c.updateChangeInstanceState(id, ChangeInstancePENDING, logStr, deployedItem)
+}
+
+func (c *Client) updateChangeInstanceState(
+	id int,
+	state ChangeInstanceState,
+	logStr string,
+	deployedItem json.RawMessage,
+) (*ChangeInstance, error) {
+	// Construct the URL for the change instance.
+	endpoint := fmt.Sprintf("orcabase/serviceowner/change_instances/%d/", id)
+	fullURL := c.BaseURL + endpoint
+
+	// Create a context with a timeout for the HTTP request.
+	ctx, cancel := context.WithTimeout(context.Background(), c.RequestTimeout)
+	defer cancel()
+
+	// Create the request body with the new state and log message.
+	body := UpdateChangeInstanceRequest{
+		State:        state,
+		Log:          logStr,
+		DeployedItem: deployedItem,
+	}
+
+	// Marshal the request body into JSON.
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "PATCH", fullURL, io.NopCloser(bytes.NewReader(bodyJSON)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set required headers.
+	req.Header.Set("Authorization", "Api-Key "+c.APIKey)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	// Log the URL being called.
+	log.Println("Calling API URL:", req.URL.String())
+
+	// Execute the HTTP PATCH request.
+	httpClient := &http.Client{Timeout: c.RequestTimeout * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for successful HTTP status code.
+	if resp.StatusCode != http.StatusOK {
+		bodyJSON := new(bytes.Buffer)
+		if _, err := bodyJSON.ReadFrom(resp.Body); err != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+		return nil, fmt.Errorf("failed to update change instance state. Details: %s, %s", resp.Status, bodyJSON.String())
+	}
+
+	var response ChangeInstance
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &response, nil
 }
