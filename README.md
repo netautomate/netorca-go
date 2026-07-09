@@ -138,6 +138,54 @@ Change instances can have the following states:
 
 
 
+### AI Pack Loop
+
+Drive the NetOrca AI "pack" pipeline for a service item — read each stage's generated data
+(`config` → `verify` → `execution`) and retrigger the pipeline when needed. All pack operations run
+from the `serviceowner` point of view.
+
+```go
+import (
+    "errors"
+    "fmt"
+
+    "github.com/netautomate/netorca-go/pkg/client"
+)
+
+serviceItemID := 42
+
+// The payload you act on is PackData.Data (raw JSON) - unmarshal it into your own type.
+config, err := nc.GetPackConfig(serviceItemID)
+if errors.Is(err, client.ErrPackDataNotFound) {
+    // The config stage has not produced data yet - a normal state while the pipeline runs.
+} else if err != nil {
+    // handle error
+}
+
+verify, err := nc.GetPackVerify(serviceItemID)
+// ... inspect verify.Data (for example an "approved" flag) ...
+
+execution, err := nc.GetPackExecution(serviceItemID)
+// ... act on execution.Data ...
+
+// Re-run the pipeline from the config stage, optionally with feedback for the AI processor.
+msg, err := nc.RetriggerPack(serviceItemID, "verify rejected: fix the firewall rule")
+if err != nil {
+    // handle error
+}
+fmt.Println(msg) // e.g. "AI Processor has been retriggered"
+```
+
+#### Methods
+
+- `GetPackConfig(serviceItemID int) (*PackData, error)` — latest `config` stage data
+- `GetPackVerify(serviceItemID int) (*PackData, error)` — latest `verify` stage data
+- `GetPackExecution(serviceItemID int) (*PackData, error)` — latest `execution` stage data
+- `RetriggerPack(serviceItemID int, serviceownerComment string) (string, error)` — re-run the pipeline from `config` (pass `""` for no comment)
+
+The three getters return `ErrPackDataNotFound` (check with `errors.Is`) when a stage has not produced
+data yet. Read the generated payload from `PackData.Data` and unmarshal it into your own type.
+
 ## Configuration
 
 Configure the client with the following options:
