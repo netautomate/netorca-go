@@ -1,0 +1,23 @@
+{
+    "id": 503,
+    "created": "2026-07-09T10:17:00.000000Z",
+    "modified": "2026-07-09T10:17:00.000000Z",
+    "object_id": 42,
+    "action_type": "execution",
+    "data": {
+        "status": "deployed",
+        "target": "f5-bigip-01"
+    },
+    "scope": {
+        "scope": "service_item",
+        "data": {
+            "id": 42,
+            "name": "app42"
+        }
+    },
+    "si_declaration": {
+        "id": 88,
+        "version": 3,
+        "service_item": 42
+    }
+}

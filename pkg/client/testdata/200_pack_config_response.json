@@ -1,0 +1,28 @@
+{
+    "id": 501,
+    "created": "2026-07-09T10:15:00.000000Z",
+    "modified": "2026-07-09T10:15:00.000000Z",
+    "object_id": 42,
+    "action_type": "config",
+    "data": {
+        "policy_name": "app42-waf",
+        "rules": [
+            {
+                "name": "block-sqli",
+                "action": "block"
+            }
+        ]
+    },
+    "scope": {
+        "scope": "service_item",
+        "data": {
+            "id": 42,
+            "name": "app42"
+        }
+    },
+    "si_declaration": {
+        "id": 88,
+        "version": 3,
+        "service_item": 42
+    }
+}
