@@ -34,6 +34,7 @@ const onePipeline = `{
   "execution": null
 }`
 
+//nolint:funlen // table of subtests; splitting it would hide the shared fixtures
 func TestListPackPipelines(t *testing.T) {
 	t.Run("returns the executor work queue for state OK and applied false", func(t *testing.T) {
 		httpmock.Activate()
@@ -120,8 +121,8 @@ func TestListPackPipelines(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Nil(t, resp)
-		assert.ErrorIs(t, err, client.ErrForbidden)
-		assert.ErrorContains(t, err, "You do not have permission")
+		require.ErrorIs(t, err, client.ErrForbidden)
+		require.ErrorContains(t, err, "You do not have permission")
 	})
 }
 
@@ -156,7 +157,7 @@ func TestGetPackPipeline(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Nil(t, pipeline)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }
 

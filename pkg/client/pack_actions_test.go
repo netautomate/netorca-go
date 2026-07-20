@@ -12,6 +12,7 @@ import (
 
 const packRoot = packTestBaseURL + "/v1/external/serviceowner/pack"
 
+//nolint:funlen // table of subtests; splitting it would hide the shared fixtures
 func TestPushPackData(t *testing.T) {
 	t.Run("stores the payload verbatim with no envelope", func(t *testing.T) {
 		httpmock.Activate()
@@ -68,7 +69,7 @@ func TestPushPackData(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Nil(t, result)
-		assert.ErrorContains(t, err, "config, verify and execution")
+		require.ErrorContains(t, err, "config, verify and execution")
 		// Caught client-side: no call should have been attempted.
 		assert.Equal(t, 0, httpmock.GetTotalCallCount())
 	})
@@ -202,7 +203,7 @@ func TestGetPackDataScoped(t *testing.T) {
 		assert.Nil(t, data)
 		// A stage that has not produced data yet is a normal state in a running pipeline,
 		// so callers branch on the specific sentinel rather than treating it as a failure.
-		assert.ErrorIs(t, err, client.ErrPackDataNotFound)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrPackDataNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }

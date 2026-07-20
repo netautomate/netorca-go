@@ -236,7 +236,7 @@ func TestClientGetPackProfile(t *testing.T) { //nolint:funlen
 		profile, err := nc.GetPackProfile(context.Background(), client.POVServiceOwner, 7)
 		require.Error(t, err)
 		assert.Nil(t, profile)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }
 
@@ -509,7 +509,7 @@ func TestClientUpdatePackProfile(t *testing.T) { //nolint:funlen
 		})
 		require.Error(t, err)
 		assert.Nil(t, profile)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }
 
@@ -537,6 +537,6 @@ func TestClientDeletePackProfile(t *testing.T) {
 		nc := newPackTestClient(t)
 		err := nc.DeletePackProfile(context.Background(), client.POVServiceOwner, 7)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }

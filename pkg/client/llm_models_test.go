@@ -102,6 +102,7 @@ func TestLLMModelRedacted(t *testing.T) {
 	})
 }
 
+//nolint:funlen // table of subtests; splitting it would hide the shared fixtures
 func TestClientListLLMModels(t *testing.T) {
 	t.Run("lists the catalogue from a path with no POV segment", func(t *testing.T) {
 		httpmock.Activate()
@@ -190,7 +191,7 @@ func TestClientListLLMModels(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Nil(t, resp)
-		assert.ErrorIs(t, err, client.ErrForbidden)
+		require.ErrorIs(t, err, client.ErrForbidden)
 	})
 }
 
@@ -236,10 +237,11 @@ func TestClientGetLLMModel(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Nil(t, model)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }
 
+//nolint:funlen // table of subtests; splitting it would hide the shared fixtures
 func TestClientFindLLMModelByName(t *testing.T) {
 	t.Run("returns the model whose name matches exactly", func(t *testing.T) {
 		httpmock.Activate()
@@ -311,7 +313,7 @@ func TestClientFindLLMModelByName(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Nil(t, model)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 		assert.Contains(t, err.Error(), `"GPT-5"`)
 	})
 
@@ -327,7 +329,7 @@ func TestClientFindLLMModelByName(t *testing.T) {
 		require.Error(t, err)
 		assert.Nil(t, model)
 		// A broken key must not look like an absent model to a caller reconciling state.
-		assert.ErrorIs(t, err, client.ErrUnauthorized)
+		require.ErrorIs(t, err, client.ErrUnauthorized)
 		assert.NotErrorIs(t, err, client.ErrNotFound)
 	})
 }
@@ -362,7 +364,7 @@ func TestClientFirstActiveLLMModel(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Nil(t, model)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 
 	t.Run("returns ErrNotFound when the catalogue is empty", func(t *testing.T) {
@@ -376,6 +378,6 @@ func TestClientFirstActiveLLMModel(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Nil(t, model)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }

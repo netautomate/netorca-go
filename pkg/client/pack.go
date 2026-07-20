@@ -256,9 +256,11 @@ func (c *Client) RetriggerPackScoped(
 		pov.orDefault(), scope.orDefault(), objectID,
 	)
 
+	body := retriggerPackRequest{ServiceownerComment: comment}
+
 	// The API returns a bare JSON string message, e.g. "AI Processor has been retriggered".
 	var message string
-	if err := c.doRequest(ctx, "POST", endpoint, retriggerPackRequest{ServiceownerComment: comment}, &message); err != nil {
+	if err := c.doRequest(ctx, "POST", endpoint, body, &message); err != nil {
 		return "", err
 	}
 	return message, nil

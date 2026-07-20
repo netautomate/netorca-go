@@ -237,7 +237,7 @@ func TestClientServiceItems(t *testing.T) { //nolint:funlen
 		serviceItems, err := nc.GetServiceItems(filters)
 		require.Error(t, err)
 		assert.Nil(t, serviceItems)
-		assert.ErrorContains(t, err, "500 Internal Server Error")
+		require.ErrorContains(t, err, "500 Internal Server Error")
 	})
 	t.Run("Test GetServiceItems returns error on 400", func(t *testing.T) {
 		httpmock.Activate()
@@ -263,6 +263,6 @@ func TestClientServiceItems(t *testing.T) { //nolint:funlen
 		serviceItems, err := nc.GetServiceItems(filters)
 		require.Error(t, err)
 		assert.Nil(t, serviceItems)
-		assert.ErrorIs(t, err, client.ErrBadRequest)
+		require.ErrorIs(t, err, client.ErrBadRequest)
 	})
 }

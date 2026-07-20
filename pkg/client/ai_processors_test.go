@@ -78,6 +78,7 @@ func TestListAIProcessorsRequestToQueryParams(t *testing.T) {
 	})
 }
 
+//nolint:funlen // table of subtests; splitting it would hide the shared fixtures
 func TestClientListAIProcessors(t *testing.T) {
 	t.Run("returns processors with relations normalised to ids", func(t *testing.T) {
 		httpmock.Activate()
@@ -204,7 +205,7 @@ func TestClientGetAIProcessor(t *testing.T) {
 		processor, err := nc.GetAIProcessor(context.Background(), client.POVServiceOwner, 12)
 		require.Error(t, err)
 		assert.Nil(t, processor)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }
 
@@ -294,7 +295,7 @@ func TestClientCreateAIProcessor(t *testing.T) { //nolint:funlen
 			&client.AIProcessorWrite{Name: "Duplicate", Service: 49, ActionType: client.PackActionConfig})
 		require.Error(t, err)
 		assert.Nil(t, processor)
-		assert.ErrorIs(t, err, client.ErrBadRequest)
+		require.ErrorIs(t, err, client.ErrBadRequest)
 		assert.Contains(t, err.Error(), "already exists")
 	})
 
@@ -356,7 +357,7 @@ func TestClientUpdateAIProcessor(t *testing.T) {
 		_, err := nc.UpdateAIProcessor(context.Background(), client.POVServiceOwner, 12,
 			map[string]any{"active": false})
 		require.Error(t, err)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }
 
@@ -382,10 +383,11 @@ func TestClientDeleteAIProcessor(t *testing.T) {
 		nc := newAIProcessorTestClient(t)
 		err := nc.DeleteAIProcessor(context.Background(), client.POVServiceOwner, 12)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }
 
+//nolint:funlen // table of subtests; splitting it would hide the shared fixtures
 func TestClientListAIProcessorHistory(t *testing.T) {
 	const historyJSON = `{
 		"count": 2,
@@ -480,10 +482,11 @@ func TestClientListAIProcessorHistory(t *testing.T) {
 		entries, err := nc.ListAIProcessorHistory(context.Background(), client.POVServiceOwner, 12)
 		require.Error(t, err)
 		assert.Nil(t, entries)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }
 
+//nolint:funlen // table of subtests; splitting it would hide the shared fixtures
 func TestClientFindAIProcessor(t *testing.T) {
 	const findURL = aiProcessorsURL + "?action_type=config&service_id=49"
 
@@ -517,7 +520,7 @@ func TestClientFindAIProcessor(t *testing.T) {
 		)
 		require.Error(t, err)
 		assert.Nil(t, processor)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 		assert.Contains(t, err.Error(), `service 49 with action type "config"`)
 	})
 
@@ -551,6 +554,6 @@ func TestClientFindAIProcessor(t *testing.T) {
 		)
 		require.Error(t, err)
 		assert.Nil(t, processor)
-		assert.ErrorIs(t, err, client.ErrForbidden)
+		require.ErrorIs(t, err, client.ErrForbidden)
 	})
 }

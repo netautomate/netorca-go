@@ -279,7 +279,7 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 		changeInstances, err := nc.GetChangeInstances(filters)
 		require.Error(t, err)
 		assert.Nil(t, changeInstances)
-		assert.ErrorContains(t, err, "500 Internal Server Error")
+		require.ErrorContains(t, err, "500 Internal Server Error")
 	})
 	t.Run("Test GetChangeInstances when api responds with 400", func(t *testing.T) {
 		httpmock.Activate()
@@ -305,7 +305,7 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 		changeInstances, err := nc.GetChangeInstances(filters)
 		require.Error(t, err)
 		assert.Nil(t, changeInstances)
-		assert.ErrorIs(t, err, client.ErrBadRequest)
+		require.ErrorIs(t, err, client.ErrBadRequest)
 	},
 	)
 }
@@ -616,8 +616,8 @@ func TestClientSetErrorChangeInstance(t *testing.T) { //nolint:funlen
 		assert.Nil(t, changeInstance)
 		// The failure surfaces as an APIError carrying the server's own explanation, so a
 		// caller can both branch on the status and show the practitioner why it was rejected.
-		assert.ErrorIs(t, err, client.ErrBadRequest)
-		assert.ErrorContains(t, err, `{"error": "Bad Request"}`)
+		require.ErrorIs(t, err, client.ErrBadRequest)
+		require.ErrorContains(t, err, `{"error": "Bad Request"}`)
 	})
 	t.Run("Test CompleteChangeInstance when api responds with 200", func(t *testing.T) {
 		httpmock.Activate()

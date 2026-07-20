@@ -57,7 +57,7 @@ func TestDeployedItemWriteValidate(t *testing.T) {
 		err := body.Validate()
 
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "not both")
+		require.ErrorContains(t, err, "not both")
 	})
 
 	t.Run("rejects a body with neither parent set", func(t *testing.T) {
@@ -66,7 +66,7 @@ func TestDeployedItemWriteValidate(t *testing.T) {
 		err := body.Validate()
 
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "needs a parent")
+		require.ErrorContains(t, err, "needs a parent")
 	})
 
 	t.Run("accepts a service item parent on its own", func(t *testing.T) {
@@ -96,7 +96,7 @@ func TestDeployedItemWriteValidate(t *testing.T) {
 		err := body.Validate()
 
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "not valid JSON")
+		require.ErrorContains(t, err, "not valid JSON")
 	})
 }
 
@@ -132,7 +132,7 @@ func TestDeployedItemLinks(t *testing.T) {
 		_, err := item.ServiceItemID()
 
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "does not end in an id")
+		require.ErrorContains(t, err, "does not end in an id")
 	})
 }
 
@@ -228,7 +228,7 @@ func TestListDeployedItems(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Nil(t, resp)
-		assert.ErrorIs(t, err, client.ErrForbidden)
+		require.ErrorIs(t, err, client.ErrForbidden)
 	})
 }
 
@@ -273,7 +273,7 @@ func TestGetDeployedItem(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Nil(t, item)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }
 
@@ -338,8 +338,8 @@ func TestFindDeployedItemForServiceItem(t *testing.T) { //nolint:funlen
 
 		require.Error(t, err)
 		assert.Nil(t, item)
-		assert.ErrorIs(t, err, client.ErrNotFound)
-		assert.ErrorContains(t, err, "389")
+		require.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorContains(t, err, "389")
 	})
 }
 
@@ -440,7 +440,7 @@ func TestCreateDeployedItem(t *testing.T) { //nolint:funlen
 
 		require.Error(t, err)
 		assert.Nil(t, item)
-		assert.ErrorContains(t, err, "not both")
+		require.ErrorContains(t, err, "not both")
 		// The platform would accept this and quietly discard the service item, so the
 		// whole point is that the request is never made.
 		assert.Equal(t, 0, httpmock.GetTotalCallCount())
@@ -456,7 +456,7 @@ func TestCreateDeployedItem(t *testing.T) { //nolint:funlen
 
 		require.Error(t, err)
 		assert.Nil(t, item)
-		assert.ErrorContains(t, err, "needs a parent")
+		require.ErrorContains(t, err, "needs a parent")
 		assert.Equal(t, 0, httpmock.GetTotalCallCount())
 	})
 
@@ -507,8 +507,8 @@ func TestCreateDeployedItem(t *testing.T) { //nolint:funlen
 
 		require.Error(t, err)
 		assert.Nil(t, item)
-		assert.ErrorIs(t, err, client.ErrBadRequest)
-		assert.ErrorContains(t, err, "Invalid hyperlink")
+		require.ErrorIs(t, err, client.ErrBadRequest)
+		require.ErrorContains(t, err, "Invalid hyperlink")
 	})
 }
 
@@ -572,7 +572,7 @@ func TestUpdateDeployedItem(t *testing.T) { //nolint:funlen
 
 		require.Error(t, err)
 		assert.Nil(t, item)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 
 	t.Run("rejects data that is not JSON before touching the network", func(t *testing.T) {
@@ -585,7 +585,7 @@ func TestUpdateDeployedItem(t *testing.T) { //nolint:funlen
 
 		require.Error(t, err)
 		assert.Nil(t, item)
-		assert.ErrorContains(t, err, "not valid JSON")
+		require.ErrorContains(t, err, "not valid JSON")
 		assert.Equal(t, 0, httpmock.GetTotalCallCount())
 	})
 }
@@ -613,6 +613,6 @@ func TestDeleteDeployedItem(t *testing.T) {
 		err := nc.DeleteDeployedItem(context.Background(), client.POVServiceOwner, 7412)
 
 		require.Error(t, err)
-		assert.ErrorIs(t, err, client.ErrNotFound)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }
