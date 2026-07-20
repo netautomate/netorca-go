@@ -154,7 +154,7 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 	t.Run("Test NewClient returns empty response with 200 when no filters matched", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/",
 			httpmock.NewStringResponder(200, `{
 			"count": 0,
 			"next": null,
@@ -190,7 +190,7 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 		defer httpmock.DeactivateAndReset()
 		// Register a mock response for the GET request with real data
 		testFileContent := readTestFile(t, "200_single_change_instance_response.json")
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/",
 			httpmock.NewStringResponder(200, testFileContent),
 		)
 
@@ -258,7 +258,7 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 	t.Run("Test GetChangeInstances when api responds with 500", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/",
 			httpmock.NewStringResponder(500, `{"error": "Internal Server Error"}`),
 		)
 
@@ -279,12 +279,12 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 		changeInstances, err := nc.GetChangeInstances(filters)
 		require.Error(t, err)
 		assert.Nil(t, changeInstances)
-		assert.Equal(t, "failed to get change instances: 500 Internal Server Error", err.Error())
+		assert.ErrorContains(t, err, "500 Internal Server Error")
 	})
 	t.Run("Test GetChangeInstances when api responds with 400", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/",
 			httpmock.NewStringResponder(400, `{"error": "Bad Request"}`),
 		)
 
@@ -305,7 +305,7 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 		changeInstances, err := nc.GetChangeInstances(filters)
 		require.Error(t, err)
 		assert.Nil(t, changeInstances)
-		assert.Equal(t, "failed to get change instances: 400 Bad Request", err.Error())
+		assert.ErrorIs(t, err, client.ErrBadRequest)
 	},
 	)
 }
@@ -614,11 +614,10 @@ func TestClientSetErrorChangeInstance(t *testing.T) { //nolint:funlen
 		changeInstance, err := nc.SetErrorChangeInstance(53, "test log", json.RawMessage(`{"comment": "error"}`))
 		require.Error(t, err)
 		assert.Nil(t, changeInstance)
-		assert.Equal(
-			t,
-			`failed to update change instance state. Details: 400 Bad Request, {"error": "Bad Request"}`,
-			err.Error(),
-		)
+		// The failure surfaces as an APIError carrying the server's own explanation, so a
+		// caller can both branch on the status and show the practitioner why it was rejected.
+		assert.ErrorIs(t, err, client.ErrBadRequest)
+		assert.ErrorContains(t, err, `{"error": "Bad Request"}`)
 	})
 	t.Run("Test CompleteChangeInstance when api responds with 200", func(t *testing.T) {
 		httpmock.Activate()

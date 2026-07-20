@@ -143,7 +143,7 @@ func TestClientServiceItems(t *testing.T) { //nolint:funlen
 	t.Run("Test NewClient returns empty response with 200 when no filters matched", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/service_items",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/service_items/",
 			httpmock.NewStringResponder(200, `{
 			"count": 0,
 			"next": null,
@@ -180,7 +180,7 @@ func TestClientServiceItems(t *testing.T) { //nolint:funlen
 		defer httpmock.DeactivateAndReset()
 		// Register a mock response for the GET request with real data
 		testFileContent := readTestFile(t, "200_single_service_item_response.json")
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/service_items",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/service_items/",
 			httpmock.NewStringResponder(200, testFileContent),
 		)
 
@@ -216,7 +216,7 @@ func TestClientServiceItems(t *testing.T) { //nolint:funlen
 	t.Run("Test GetServiceItems returns error on 500", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/service_items",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/service_items/",
 			httpmock.NewStringResponder(500, `{"error": "Internal Server Error"}`),
 		)
 
@@ -237,12 +237,12 @@ func TestClientServiceItems(t *testing.T) { //nolint:funlen
 		serviceItems, err := nc.GetServiceItems(filters)
 		require.Error(t, err)
 		assert.Nil(t, serviceItems)
-		assert.Equal(t, "failed to get service items: 500 Internal Server Error", err.Error())
+		assert.ErrorContains(t, err, "500 Internal Server Error")
 	})
 	t.Run("Test GetServiceItems returns error on 400", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/service_items",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/service_items/",
 			httpmock.NewStringResponder(400, `{"error": "Bad Request"}`),
 		)
 
@@ -263,6 +263,6 @@ func TestClientServiceItems(t *testing.T) { //nolint:funlen
 		serviceItems, err := nc.GetServiceItems(filters)
 		require.Error(t, err)
 		assert.Nil(t, serviceItems)
-		assert.Equal(t, "failed to get service items: 400 Bad Request", err.Error())
+		assert.ErrorIs(t, err, client.ErrBadRequest)
 	})
 }
