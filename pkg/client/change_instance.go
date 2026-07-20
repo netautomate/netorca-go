@@ -197,10 +197,18 @@ type UpdateChangeInstanceRequest struct {
 
 	// State is the new state of the change instance (e.g., "APPROVED", "REJECTED").
 	State ChangeInstanceState `json:"state"`
-	// Log is a string containing the log or message associated with the change instance.
-	Log string `json:"log"`
-	// DeployedItem is the deployed item associated with the change instance.
-	DeployedItem json.RawMessage `json:"deployed_item"`
+	// Log is the reason for the transition, recorded against the change. Omitted when empty so
+	// a transition that says nothing leaves any existing log intact rather than blanking it.
+	Log string `json:"log,omitempty"`
+	// DeployedItem records what was built to serve the request.
+	//
+	// The omitempty is load-bearing, not cosmetic. json.RawMessage is a []byte, and a nil one
+	// marshals to the literal null rather than disappearing - so without this, passing nil
+	// sends {"deployed_item": null} and the API rejects the whole transition with
+	// {"deployed_item":["This field may not be null."]}. That made the most natural call in
+	// the package - approving a change without asserting anything about deployment - fail
+	// every time.
+	DeployedItem json.RawMessage `json:"deployed_item,omitempty"`
 }
 
 // GetChangeInstances is a method on Client that fetches change instances from the API using

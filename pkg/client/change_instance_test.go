@@ -646,3 +646,59 @@ func TestClientSetErrorChangeInstance(t *testing.T) { //nolint:funlen
 		assert.JSONEq(t, `{"comment":"error"}`, string(changeInstance.ServiceItem.DeployedItem))
 	})
 }
+
+// TestUpdateChangeInstanceOptionalFields pins the omitempty behaviour on the transition body.
+//
+// It exists because a live run caught the opposite: json.RawMessage is a []byte, and a nil one
+// marshals to the literal null rather than being omitted, so the API rejected every transition
+// that did not also assert a deployed item. Mocked tests never noticed because they all passed
+// one.
+func TestUpdateChangeInstanceOptionalFields(t *testing.T) {
+	const patchURL = "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/"
+
+	t.Run("a nil deployed item is omitted, not sent as null", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedBody string
+		httpmock.RegisterResponder("PATCH", patchURL,
+			captureBodyResponder(&capturedBody, 200, `{"id":53,"state":"APPROVED"}`))
+
+		nc := newPackTestClient(t)
+		_, err := nc.ApproveChangeInstance(53, "looks good", nil)
+
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"state":"APPROVED","log":"looks good"}`, capturedBody)
+		assert.NotContains(t, capturedBody, "deployed_item")
+	})
+
+	t.Run("an empty log is omitted so it does not blank an existing one", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedBody string
+		httpmock.RegisterResponder("PATCH", patchURL,
+			captureBodyResponder(&capturedBody, 200, `{"id":53,"state":"APPROVED"}`))
+
+		nc := newPackTestClient(t)
+		_, err := nc.ApproveChangeInstance(53, "", nil)
+
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"state":"APPROVED"}`, capturedBody)
+	})
+
+	t.Run("a supplied deployed item still goes on the wire", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedBody string
+		httpmock.RegisterResponder("PATCH", patchURL,
+			captureBodyResponder(&capturedBody, 200, `{"id":53,"state":"COMPLETED"}`))
+
+		nc := newPackTestClient(t)
+		_, err := nc.CompleteChangeInstance(53, "deployed", json.RawMessage(`{"vip":"10.1.1.1"}`))
+
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"state":"COMPLETED","log":"deployed","deployed_item":{"vip":"10.1.1.1"}}`, capturedBody)
+	})
+}
