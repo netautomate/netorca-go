@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -312,27 +311,7 @@ func (c *Client) ListAIProcessorHistory(
 	if err := c.doRequest(ctx, "GET", endpoint, nil, &raw); err != nil {
 		return nil, err
 	}
-
-	// The route paginates, so the entries normally arrive inside the standard envelope. Sniff
-	// the shape rather than assuming it: the view only wraps its results while a paginator is
-	// configured, and pagination is an instance-wide setting an on-prem deployment can turn
-	// off, which would otherwise leave this failing to decode at all.
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) > 0 && trimmed[0] == '[' {
-		var entries []AIProcessorHistoryEntry
-		if err := json.Unmarshal(trimmed, &entries); err != nil {
-			return nil, fmt.Errorf("failed to decode AI processor history: %w", err)
-		}
-		return entries, nil
-	}
-
-	var envelope struct {
-		Results []AIProcessorHistoryEntry `json:"results"`
-	}
-	if err := json.Unmarshal(trimmed, &envelope); err != nil {
-		return nil, fmt.Errorf("failed to decode AI processor history envelope: %w", err)
-	}
-	return envelope.Results, nil
+	return decodeHistoryList[AIProcessorHistoryEntry](raw, "AI processor")
 }
 
 // FindAIProcessor returns the processor for a (service, action type) pair - the pair the platform

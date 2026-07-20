@@ -2,7 +2,9 @@
 package client_test
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
@@ -13,6 +15,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const changeInstancesRoot = packTestBaseURL + "/v1/orcabase/serviceowner/change_instances"
+
+// changeInstanceHistory is the trail of a change raised by a consumer, approved by a service
+// owner's API key with a note, then completed by the platform itself. It shows the three things
+// about the shape a caller has to know: id repeats (it is the change's id, not the entry's),
+// changed_by reads "SYSTEM" for a platform transition, and changed_by_team can be null.
+const changeInstanceHistory = `[
+  {
+    "id": 7,
+    "state": "COMPLETED",
+    "log": "Deployed to lon-dc1.",
+    "modified": "2026-07-19T14:03:00Z",
+    "reason": "state",
+    "changed_by": "SYSTEM",
+    "changed_by_team": null
+  },
+  {
+    "id": 7,
+    "state": "APPROVED",
+    "log": "Capacity confirmed.",
+    "modified": "2026-07-19T11:20:00Z",
+    "reason": "state",
+    "changed_by": "terraform-key (Api Key)",
+    "changed_by_team": "AWS"
+  }
+]`
+
+//nolint:funlen // a filter table: every case has to spell out the fields it is pinning
 func TestChangeInstancesToQueryParams(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -23,12 +53,14 @@ func TestChangeInstancesToQueryParams(t *testing.T) {
 			name: "All fields set",
 			request: &client.GetChangeInstancesRequest{
 				POV:                 "pov", // will be ignored
+				ApplicationID:       "app-id",
 				ChangeType:          "type",
 				CommitID:            "commit-id",
 				ConsumerTeamID:      "team-id",
 				Declaration:         "declaration",
 				DeclarationContains: "contains",
 				DeclarationRegex:    "regex",
+				EndDate:             time.Date(2025, 4, 30, 0, 0, 0, 0, time.UTC),
 				ExcludeReferenced:   true,
 				Limit:               10,
 				Modified:            time.Date(2025, 4, 9, 11, 11, 4, 194909000, time.UTC),
@@ -37,10 +69,11 @@ func TestChangeInstancesToQueryParams(t *testing.T) {
 				ServiceItemID:       "item-id",
 				ServiceName:         "service-name",
 				ServiceOwnerTeamID:  "team-owner-id",
+				StartDate:           time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC),
 				State:               "state",
 				SubmissionID:        "submission-id",
 			},
-			expected: "change_type=type&commit_id=commit-id&consumer_team_id=team-id&declaration=declaration&declaration_contains=contains&declaration_regex=regex&exclude_referenced=true&limit=10&modified=2025-04-09T11%3A11%3A04Z&service_id=service-id&service_item_id=item-id&service_name=service-name&service_owner_team_id=team-owner-id&state=state&submission_id=submission-id", //nolint
+			expected: "application_id=app-id&change_type=type&commit_id=commit-id&consumer_team_id=team-id&declaration=declaration&declaration_contains=contains&declaration_regex=regex&end_date=2025-04-30T00%3A00%3A00Z&exclude_referenced=true&limit=10&modified=2025-04-09T11%3A11%3A04Z&service_id=service-id&service_item_id=item-id&service_name=service-name&service_owner_team_id=team-owner-id&start_date=2025-04-01T00%3A00%3A00Z&state=state&submission_id=submission-id", //nolint
 		},
 		{
 			name:     "No fields set",
@@ -700,5 +733,224 @@ func TestUpdateChangeInstanceOptionalFields(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.JSONEq(t, `{"state":"COMPLETED","log":"deployed","deployed_item":{"vip":"10.1.1.1"}}`, capturedBody)
+	})
+}
+
+// TestGetChangeInstancesFilterWire pins the new filters to the wire. The backend's filterset
+// rejects any parameter it does not declare with a 400, so the names matter as much as the
+// values - and application_id in particular had no way of being sent at all before.
+func TestGetChangeInstancesFilterWire(t *testing.T) {
+	t.Run("sends application_id and the modified window", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedQuery string
+		httpmock.RegisterResponder("GET", changeInstancesRoot+"/",
+			func(req *http.Request) (*http.Response, error) {
+				capturedQuery = req.URL.RawQuery
+				return httpmock.NewStringResponse(200, emptyPage), nil
+			})
+
+		nc := newPackTestClient(t)
+		_, err := nc.GetChangeInstancesWithContext(context.Background(), &client.GetChangeInstancesRequest{
+			ApplicationID: "23,24",
+			StartDate:     time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC),
+			EndDate:       time.Date(2025, 4, 30, 0, 0, 0, 0, time.UTC),
+		})
+
+		require.NoError(t, err)
+		// A comma-joined value is the platform's "in" lookup, so this asks for either.
+		assert.Contains(t, capturedQuery, "application_id=23%2C24")
+		assert.Contains(t, capturedQuery, "start_date=2025-04-01T00%3A00%3A00Z")
+		assert.Contains(t, capturedQuery, "end_date=2025-04-30T00%3A00%3A00Z")
+	})
+
+	t.Run("omits the date filters when unset", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedQuery string
+		httpmock.RegisterResponder("GET", changeInstancesRoot+"/",
+			func(req *http.Request) (*http.Response, error) {
+				capturedQuery = req.URL.RawQuery
+				return httpmock.NewStringResponse(200, emptyPage), nil
+			})
+
+		nc := newPackTestClient(t)
+		_, err := nc.GetChangeInstancesWithContext(context.Background(), &client.GetChangeInstancesRequest{
+			State: "PENDING",
+		})
+
+		require.NoError(t, err)
+		// A zero time is "unset", not the epoch - sending it would bound the window at 1970
+		// and quietly drop everything.
+		assert.NotContains(t, capturedQuery, "start_date")
+		assert.NotContains(t, capturedQuery, "end_date")
+	})
+}
+
+func TestGetDependantChangeInstances(t *testing.T) {
+	t.Run("queries the dependant route carrying the filters", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedQuery string
+		httpmock.RegisterResponder("GET", changeInstancesRoot+"/dependant/",
+			func(req *http.Request) (*http.Response, error) {
+				capturedQuery = req.URL.RawQuery
+				return httpmock.NewStringResponse(200, emptyPage), nil
+			})
+
+		nc := newPackTestClient(t)
+		resp, err := nc.GetDependantChangeInstances(context.Background(), &client.GetChangeInstancesRequest{
+			ApplicationID: "23",
+			State:         "PENDING",
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, 0, resp.Count)
+		// The extra route shares the plain listing's filterset, so the filters must survive
+		// the detour rather than being dropped on the way.
+		assert.Contains(t, capturedQuery, "application_id=23")
+		assert.Contains(t, capturedQuery, "state=PENDING")
+	})
+
+	t.Run("defaults an empty POV to serviceowner", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		httpmock.RegisterResponder("GET", changeInstancesRoot+"/dependant/",
+			httpmock.NewStringResponder(200, emptyPage))
+
+		nc := newPackTestClient(t)
+		_, err := nc.GetDependantChangeInstances(context.Background(), nil)
+
+		require.NoError(t, err)
+	})
+}
+
+func TestGetReferencedChangeInstances(t *testing.T) {
+	t.Run("queries the referenced route carrying the filters", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedQuery string
+		httpmock.RegisterResponder("GET", changeInstancesRoot+"/referenced/",
+			func(req *http.Request) (*http.Response, error) {
+				capturedQuery = req.URL.RawQuery
+				return httpmock.NewStringResponse(200, emptyPage), nil
+			})
+
+		nc := newPackTestClient(t)
+		_, err := nc.GetReferencedChangeInstances(context.Background(), &client.GetChangeInstancesRequest{
+			ServiceItemID: "389",
+			Limit:         25,
+		})
+
+		require.NoError(t, err)
+		assert.Contains(t, capturedQuery, "service_item_id=389")
+		assert.Contains(t, capturedQuery, "limit=25")
+	})
+
+	t.Run("honours a consumer POV", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		httpmock.RegisterResponder("GET", packTestBaseURL+"/v1/orcabase/consumer/change_instances/referenced/",
+			httpmock.NewStringResponder(200, emptyPage))
+
+		nc := newPackTestClient(t)
+		_, err := nc.GetReferencedChangeInstances(context.Background(), &client.GetChangeInstancesRequest{
+			POV: string(client.POVConsumer),
+		})
+
+		require.NoError(t, err)
+	})
+}
+
+//nolint:funlen // four subtests over one fixture; splitting them would scatter the shape assertions
+func TestListChangeInstanceHistory(t *testing.T) {
+	t.Run("decodes the paginated envelope the route normally returns", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedPath string
+		httpmock.RegisterResponder("GET", changeInstancesRoot+"/7/history/",
+			func(req *http.Request) (*http.Response, error) {
+				capturedPath = req.URL.Path
+				body := `{"count":2,"next":null,"previous":null,"results":` + changeInstanceHistory + `}`
+				return httpmock.NewStringResponse(200, body), nil
+			})
+
+		nc := newPackTestClient(t)
+		entries, err := nc.ListChangeInstanceHistory(context.Background(), client.POVServiceOwner, 7)
+
+		require.NoError(t, err)
+		// The id belongs once in the path. Repeating it, as the Python SDK does, gives a
+		// route that does not exist.
+		assert.Equal(t, "/v1/orcabase/serviceowner/change_instances/7/history/", capturedPath)
+
+		require.Len(t, entries, 2)
+		// Entries arrive newest first, and every one repeats the change's id rather than
+		// carrying an identifier of its own.
+		assert.Equal(t, "COMPLETED", entries[0].State)
+		assert.Equal(t, 7, entries[0].ID)
+		assert.Equal(t, 7, entries[1].ID)
+		assert.Equal(t, "Capacity confirmed.", entries[1].Log)
+
+		// A platform transition is attributed to nobody's team, which is why the field is
+		// a pointer rather than a string.
+		require.NotNil(t, entries[0].ChangedBy)
+		assert.Equal(t, "SYSTEM", *entries[0].ChangedBy)
+		assert.Nil(t, entries[0].ChangedByTeam)
+		require.NotNil(t, entries[1].ChangedByTeam)
+		assert.Equal(t, "AWS", *entries[1].ChangedByTeam)
+	})
+
+	t.Run("decodes a bare array when pagination is switched off", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		// An on-prem deployment can turn the paginator off instance-wide, at which point
+		// the view stops wrapping its results.
+		httpmock.RegisterResponder("GET", changeInstancesRoot+"/7/history/",
+			httpmock.NewStringResponder(200, changeInstanceHistory))
+
+		nc := newPackTestClient(t)
+		entries, err := nc.ListChangeInstanceHistory(context.Background(), client.POVServiceOwner, 7)
+
+		require.NoError(t, err)
+		require.Len(t, entries, 2)
+		assert.Equal(t, "APPROVED", entries[1].State)
+		assert.Equal(t, "state", entries[1].Reason)
+	})
+
+	t.Run("defaults an empty POV to serviceowner", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		httpmock.RegisterResponder("GET", changeInstancesRoot+"/7/history/",
+			httpmock.NewStringResponder(200, `[]`))
+
+		nc := newPackTestClient(t)
+		entries, err := nc.ListChangeInstanceHistory(context.Background(), "", 7)
+
+		require.NoError(t, err)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("surfaces a missing change as ErrNotFound", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		httpmock.RegisterResponder("GET", changeInstancesRoot+"/999999/history/",
+			httpmock.NewStringResponder(404, `{"detail":"Not found."}`))
+
+		nc := newPackTestClient(t)
+		entries, err := nc.ListChangeInstanceHistory(context.Background(), client.POVServiceOwner, 999999)
+
+		require.Error(t, err)
+		assert.Nil(t, entries)
+		require.ErrorIs(t, err, client.ErrNotFound)
 	})
 }

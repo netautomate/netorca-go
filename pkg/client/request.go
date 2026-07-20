@@ -99,6 +99,32 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any, o
 	return nil
 }
 
+// decodeHistoryList decodes the answer from one of the platform's history routes into entries.
+// The what argument names the resource for the error message ("AI processor", say).
+//
+// Those routes paginate, so entries normally arrive inside the standard envelope. This sniffs
+// the shape rather than assuming it: a view only wraps its results while a paginator is
+// configured, and pagination is an instance-wide setting an on-prem deployment can turn off,
+// which would otherwise leave every history call failing to decode at all.
+func decodeHistoryList[T any](raw json.RawMessage, what string) ([]T, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var entries []T
+		if err := json.Unmarshal(trimmed, &entries); err != nil {
+			return nil, fmt.Errorf("failed to decode %s history: %w", what, err)
+		}
+		return entries, nil
+	}
+
+	var envelope struct {
+		Results []T `json:"results"`
+	}
+	if err := json.Unmarshal(trimmed, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to decode %s history envelope: %w", what, err)
+	}
+	return envelope.Results, nil
+}
+
 // queryParams accumulates list-endpoint filters in the form the NetOrca API expects, and
 // renders them percent-encoded. The zero value is ready to use.
 //
