@@ -265,12 +265,20 @@ _, err = nc.UpdateAIProcessor(ctx, client.POVServiceOwner, processor.ID,
     map[string]any{"prompt": revisedPrompt})
 
 // pack_enabled is the per-service master switch. Nothing runs without it.
+// Writes are upserts keyed on the service, so this is safe to re-run.
 enabled := true
-_, err = nc.CreatePackProfile(ctx, client.POVServiceOwner, &client.PackProfileWrite{
-    Service:     client.RefID(49),
-    PackEnabled: &enabled,
+_, err = nc.UpsertPackProfileForService(ctx, client.POVServiceOwner, 49, map[string]any{
+    "pack_enabled": &enabled,
+    "top_k":        10,
 })
 ```
+
+> Pack profile writes go through the platform's service-scoped `configure` route, not the profile's
+> own detail route. The collection `POST` and the detail `PATCH`/`PUT` answer **500** with a Django
+> error page whatever the body — verified against a live instance — so `configure` is the only write
+> path that works. `CreatePackProfile` and `UpdatePackProfile` both delegate to
+> `UpsertPackProfileForService`; `UpdatePackProfile` costs an extra `GET` to resolve the service from
+> the profile id, so prefer the upsert directly when you already know the service.
 
 ### Deployed items
 

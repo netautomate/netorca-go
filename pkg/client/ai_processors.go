@@ -71,7 +71,10 @@ type AIProcessorWrite struct {
 	Prompt string `json:"prompt"`
 	// ExtraData carries the per-action-type settings, omitted when empty so the platform
 	// applies its own defaults. The optimiser is the one type with required settings: it
-	// wants schedule_enabled and schedule_crontab here.
+	// wants both schedule_enabled and schedule_crontab here, and rejects the write with
+	// {"extra_data":{"schedule_crontab":["This field is required."]}} if either is missing -
+	// including when schedule_enabled is false, so "scheduling is off" is not a way out of
+	// supplying a crontab.
 	ExtraData map[string]any `json:"extra_data,omitempty"`
 	// ResponseSchema is an optional JSON Schema constraining the model's answer. Omitted when
 	// empty, which leaves the platform's default for the action type in force.

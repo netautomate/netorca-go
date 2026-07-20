@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -242,11 +243,60 @@ func (c *Client) FindPackProfile(ctx context.Context, pov POV, serviceID int) (*
 	)
 }
 
+// packProfileConfigurePath builds the service-scoped configure route, which is the only write
+// path the platform actually serves for pack profiles - see UpsertPackProfileForService.
+func packProfileConfigurePath(pov POV, serviceID int) string {
+	return fmt.Sprintf("ai/%s/pack/profiles/service/%d/", pov.orDefault(), serviceID)
+}
+
+// UpsertPackProfileForService creates or updates a service's pack profile in a single call, and
+// is the way to write one. The patch holds JSON field names - "pack_enabled", "top_k",
+// "query_config" and so on; fields it does not name keep their stored values.
+//
+// It targets the platform's service-scoped configure route rather than the profile's own detail
+// route, for two reasons.
+//
+// The first is that the collection and detail write routes do not work: POST to the collection
+// and PATCH or PUT to a profile's detail route all answer 500 with a Django error page rather
+// than a DRF response, whatever the body - including a body that only sets pack_enabled. The
+// configure route is the only write path that succeeds, and is what the platform's own GUI uses.
+//
+// The second is that upsert is the semantics a caller actually wants. A service has at most one
+// profile, and the platform materialises a default one as a side effect of anything reading the
+// service's resolved config - so "create" and "update" are not reliably distinguishable from the
+// outside, and a caller reconciling desired state should not have to care which happened.
+func (c *Client) UpsertPackProfileForService(
+	ctx context.Context,
+	pov POV,
+	serviceID int,
+	patch map[string]any,
+) (*PackProfile, error) {
+	if serviceID <= 0 {
+		return nil, fmt.Errorf("pack profile requires a service id, got %d", serviceID)
+	}
+
+	// The route resolves the service itself, so "service" in the body would be redundant at
+	// best and contradictory at worst.
+	body := make(map[string]any, len(patch))
+	for key, value := range patch {
+		if key == "service" {
+			continue
+		}
+		body[key] = value
+	}
+
+	var response PackProfile
+	if err := c.doRequest(ctx, "PATCH", packProfileConfigurePath(pov, serviceID), body, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
 // CreatePackProfile creates the pack profile for a service and returns it as stored.
 //
-// A service can only have one profile, so creating a second for the same service fails with
-// ErrBadRequest. Where a profile may already exist, call FindPackProfile first and fall back to
-// UpdatePackProfile - creating blind is not idempotent.
+// A service can have only one profile, so this is an upsert in practice: it delegates to
+// UpsertPackProfileForService, and calling it for a service that already has a profile updates
+// that profile rather than failing.
 func (c *Client) CreatePackProfile(ctx context.Context, pov POV, body *PackProfileWrite) (*PackProfile, error) {
 	if body == nil {
 		return nil, fmt.Errorf("pack profile body cannot be nil")
@@ -255,11 +305,27 @@ func (c *Client) CreatePackProfile(ctx context.Context, pov POV, body *PackProfi
 		return nil, fmt.Errorf("pack profile requires a service id, got %d", body.Service.Int())
 	}
 
-	var response PackProfile
-	if err := c.doRequest(ctx, "POST", packProfilesPath(pov, ""), body, &response); err != nil {
+	patch, err := packProfileWriteToPatch(body)
+	if err != nil {
 		return nil, err
 	}
-	return &response, nil
+	return c.UpsertPackProfileForService(ctx, pov, body.Service.Int(), patch)
+}
+
+// packProfileWriteToPatch turns a write struct into the field map the configure route takes,
+// preserving the struct's omitempty behaviour so unset tunables stay unset.
+func packProfileWriteToPatch(body *PackProfileWrite) (map[string]any, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode pack profile body: %w", err)
+	}
+
+	var patch map[string]any
+	if err := json.Unmarshal(encoded, &patch); err != nil {
+		return nil, fmt.Errorf("failed to decode pack profile body: %w", err)
+	}
+	delete(patch, "service")
+	return patch, nil
 }
 
 // UpdatePackProfile applies a partial update to a pack profile and returns it as stored.
@@ -273,6 +339,10 @@ func (c *Client) CreatePackProfile(ctx context.Context, pov POV, body *PackProfi
 //	profile, err := c.UpdatePackProfile(ctx, client.POVServiceOwner, 7, map[string]any{
 //		"pack_enabled": false,
 //	})
+//
+// It costs one extra GET, because the write it delegates to is keyed on the service rather than
+// the profile and the profile's own detail route cannot be written to. Where the service id is
+// already known, call UpsertPackProfileForService directly and skip the lookup.
 func (c *Client) UpdatePackProfile(
 	ctx context.Context,
 	pov POV,
@@ -283,11 +353,12 @@ func (c *Client) UpdatePackProfile(
 		return nil, fmt.Errorf("pack profile patch cannot be empty")
 	}
 
-	var response PackProfile
-	if err := c.doRequest(ctx, "PATCH", packProfilePath(pov, id), patch, &response); err != nil {
-		return nil, err
+	profile, err := c.GetPackProfile(ctx, pov, id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve the service of pack profile %d: %w", id, err)
 	}
-	return &response, nil
+
+	return c.UpsertPackProfileForService(ctx, pov, profile.Service.Int(), patch)
 }
 
 // DeletePackProfile removes a pack profile, reverting its service to the platform defaults.

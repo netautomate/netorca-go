@@ -17,6 +17,10 @@ func packProfilePtr[T any](v T) *T { return &v }
 // packProfilesURL is the collection route. Note the "ai/" prefix rather than "external/".
 const packProfilesURL = packTestBaseURL + "/v1/ai/serviceowner/pack/profiles/"
 
+// packProfileConfigureURL is the service-scoped configure route. It is the only write path
+// the platform serves: the collection POST and the detail PATCH/PUT both answer 500.
+const packProfileConfigureURL = packTestBaseURL + "/v1/ai/serviceowner/pack/profiles/service/49/"
+
 // packProfileJSON is a full profile as the API renders one, with every serializer field present.
 const packProfileJSON = `{
 	"id": 7,
@@ -323,7 +327,7 @@ func TestClientCreatePackProfile(t *testing.T) { //nolint:funlen
 		defer httpmock.DeactivateAndReset()
 
 		var capturedBody string
-		httpmock.RegisterResponder("POST", packProfilesURL,
+		httpmock.RegisterResponder("PATCH", packProfileConfigureURL,
 			captureBodyResponder(&capturedBody, 201, packProfileJSON),
 		)
 
@@ -338,7 +342,9 @@ func TestClientCreatePackProfile(t *testing.T) { //nolint:funlen
 
 		// The load-bearing assertion: nothing the caller left alone reaches the wire, so the
 		// platform defaults survive. A plain int field would have sent "top_k":0 here.
-		assert.JSONEq(t, `{"service":49,"pack_enabled":true}`, capturedBody)
+		// The service is in the URL on the configure route, so sending it in the body too
+		// would be redundant at best and contradictory at worst.
+		assert.JSONEq(t, `{"pack_enabled":true}`, capturedBody)
 	})
 
 	t.Run("CreatePackProfile sends a deliberate zero", func(t *testing.T) {
@@ -346,7 +352,7 @@ func TestClientCreatePackProfile(t *testing.T) { //nolint:funlen
 		defer httpmock.DeactivateAndReset()
 
 		var capturedBody string
-		httpmock.RegisterResponder("POST", packProfilesURL,
+		httpmock.RegisterResponder("PATCH", packProfileConfigureURL,
 			captureBodyResponder(&capturedBody, 201, packProfileJSON),
 		)
 
@@ -360,7 +366,7 @@ func TestClientCreatePackProfile(t *testing.T) { //nolint:funlen
 
 		// The other half of the pointer contract: an explicit zero is not "unset" and must
 		// survive to the API, unlike the fields left nil above.
-		assert.JSONEq(t, `{"service":49,"chunk_overlap":0,"return_all_documents":false}`, capturedBody)
+		assert.JSONEq(t, `{"chunk_overlap":0,"return_all_documents":false}`, capturedBody)
 	})
 
 	t.Run("CreatePackProfile sends the full write shape", func(t *testing.T) {
@@ -368,7 +374,7 @@ func TestClientCreatePackProfile(t *testing.T) { //nolint:funlen
 		defer httpmock.DeactivateAndReset()
 
 		var capturedBody string
-		httpmock.RegisterResponder("POST", packProfilesURL,
+		httpmock.RegisterResponder("PATCH", packProfileConfigureURL,
 			captureBodyResponder(&capturedBody, 201, packProfileJSON),
 		)
 
@@ -392,7 +398,6 @@ func TestClientCreatePackProfile(t *testing.T) { //nolint:funlen
 		require.NoError(t, err)
 
 		assert.JSONEq(t, `{
-			"service": 49,
 			"chunk_overlap": 2,
 			"max_lines": 20,
 			"max_chars": 512,
@@ -433,7 +438,7 @@ func TestClientCreatePackProfile(t *testing.T) { //nolint:funlen
 	t.Run("CreatePackProfile surfaces the duplicate-profile rejection", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("POST", packProfilesURL,
+		httpmock.RegisterResponder("PATCH", packProfileConfigureURL,
 			httpmock.NewStringResponder(400, `{"service":["pack service profile with this service already exists."]}`),
 		)
 
@@ -456,7 +461,9 @@ func TestClientUpdatePackProfile(t *testing.T) { //nolint:funlen
 		defer httpmock.DeactivateAndReset()
 
 		var capturedBody string
-		httpmock.RegisterResponder("PATCH", detailURL, captureBodyResponder(&capturedBody, 200, packProfileJSON))
+		httpmock.RegisterResponder("GET", detailURL, httpmock.NewStringResponder(200, packProfileJSON))
+		httpmock.RegisterResponder("PATCH", packProfileConfigureURL,
+			captureBodyResponder(&capturedBody, 200, packProfileJSON))
 
 		nc := newPackTestClient(t)
 		profile, err := nc.UpdatePackProfile(context.Background(), client.POVServiceOwner, 7, map[string]any{
@@ -474,7 +481,9 @@ func TestClientUpdatePackProfile(t *testing.T) { //nolint:funlen
 		defer httpmock.DeactivateAndReset()
 
 		var capturedBody string
-		httpmock.RegisterResponder("PATCH", detailURL, captureBodyResponder(&capturedBody, 200, packProfileJSON))
+		httpmock.RegisterResponder("GET", detailURL, httpmock.NewStringResponder(200, packProfileJSON))
+		httpmock.RegisterResponder("PATCH", packProfileConfigureURL,
+			captureBodyResponder(&capturedBody, 200, packProfileJSON))
 
 		nc := newPackTestClient(t)
 		_, err := nc.UpdatePackProfile(context.Background(), client.POVServiceOwner, 7, map[string]any{
@@ -499,7 +508,7 @@ func TestClientUpdatePackProfile(t *testing.T) { //nolint:funlen
 	t.Run("UpdatePackProfile returns ErrNotFound on 404", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("PATCH", detailURL,
+		httpmock.RegisterResponder("GET", detailURL,
 			httpmock.NewStringResponder(404, `{"detail":"Not found."}`),
 		)
 
