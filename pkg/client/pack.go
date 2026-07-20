@@ -1,19 +1,21 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log"
-	"net/http"
 	"time"
 )
 
-// PackActionType identifies a stage in the NetOrca AI pack pipeline.
-// The pipeline runs config -> verify -> execution; RetriggerPack always restarts it from config.
+// PackActionType identifies a stage of the NetOrca AI pack pipeline, or one of the
+// standalone processor types that run outside it.
+//
+// The pipeline proper runs config -> verify -> execution, each stage feeding the next.
+// Optimiser and ChangeInstanceValidator are separate processors: the validator reviews
+// incoming change instances, the optimiser runs on a schedule to reduce retrigger cycles.
+//
+// Trigger accepts all five; pack data exists only for the three pipeline stages.
 type PackActionType string
 
 const (
@@ -23,12 +25,55 @@ const (
 	PackActionVerify PackActionType = "verify"
 	// PackActionExecution is the "execution" stage - the execution/deployment data.
 	PackActionExecution PackActionType = "execution"
+	// PackActionOptimiser is the scheduled optimiser processor. Note the British spelling,
+	// which is what the API expects.
+	PackActionOptimiser PackActionType = "optimiser"
+	// PackActionChangeInstanceValidator is the processor that reviews incoming change
+	// instances, optionally approving or rejecting them automatically.
+	PackActionChangeInstanceValidator PackActionType = "change_instance_validator"
 )
 
-// ErrPackDataNotFound is returned by the pack data getters when no data exists yet for the
-// requested stage (the API responds with HTTP 404). This is a normal, expected state while a
-// pack pipeline is still running; detect it with errors.Is(err, ErrPackDataNotFound).
-var ErrPackDataNotFound = errors.New("netorca: pack data not found")
+// IsPipelineStage reports whether the action is one of the three stages that produce pack
+// data. Pack data cannot be read or pushed for the optimiser or validator processors.
+func (a PackActionType) IsPipelineStage() bool {
+	switch a {
+	case PackActionConfig, PackActionVerify, PackActionExecution:
+		return true
+	}
+	return false
+}
+
+// PackScope is the kind of object a pack pipeline runs against. Most workflows are scoped to
+// a service item - one consumer's request - but a processor can also be scoped to a whole
+// service.
+type PackScope string
+
+const (
+	// PackScopeServiceItem scopes pack operations to a single service item.
+	PackScopeServiceItem PackScope = "service_item"
+	// PackScopeService scopes pack operations to an entire service.
+	PackScopeService PackScope = "service"
+)
+
+// Validate reports whether the scope is one the API recognises.
+func (s PackScope) Validate() error {
+	switch s {
+	case PackScopeServiceItem, PackScopeService:
+		return nil
+	case "":
+		return fmt.Errorf("pack scope cannot be empty (expected %q or %q)", PackScopeServiceItem, PackScopeService)
+	}
+	return fmt.Errorf("invalid pack scope %q (expected %q or %q)", s, PackScopeServiceItem, PackScopeService)
+}
+
+// orDefault returns the scope, falling back to service_item - the scope of essentially every
+// real workflow, and the one the original pack getters hardcoded.
+func (s PackScope) orDefault() PackScope {
+	if s == "" {
+		return PackScopeServiceItem
+	}
+	return s
+}
 
 // PackData is the persisted output of a single pack pipeline stage.
 // The Data field holds the AI-generated JSON payload that callers act on; unmarshal it into your
@@ -52,6 +97,19 @@ type PackData struct {
 	SIDeclaration json.RawMessage `json:"si_declaration"`
 }
 
+// ScopeKind extracts the scope name ("service_item" or "service") from the scope envelope.
+// The executor loop needs it to report results back against the same scope the pipeline ran on
+// rather than assuming service_item.
+func (p *PackData) ScopeKind() PackScope {
+	var envelope struct {
+		Scope string `json:"scope"`
+	}
+	if err := json.Unmarshal(p.Scope, &envelope); err != nil {
+		return ""
+	}
+	return PackScope(envelope.Scope)
+}
+
 // retriggerPackRequest is the request body for RetriggerPack.
 // An empty comment is omitted so the API receives an empty JSON object.
 type retriggerPackRequest struct {
@@ -59,76 +117,114 @@ type retriggerPackRequest struct {
 	ServiceownerComment string `json:"serviceowner_comment,omitempty"`
 }
 
+// packDataPath builds the pack data route for a scoped object and stage. The trailing slash is
+// the canonical DRF route; without it the API replies 301 to the slashed URL.
+func packDataPath(pov POV, scope PackScope, objectID int, action PackActionType) string {
+	return fmt.Sprintf("external/%s/pack/data/%s/%d/%s/", pov.orDefault(), scope.orDefault(), objectID, action)
+}
+
 // GetPackConfig returns the latest "config" stage data for the given service item.
 // It returns ErrPackDataNotFound if the config stage has not produced data yet.
 func (c *Client) GetPackConfig(serviceItemID int) (*PackData, error) {
-	return c.getPackData(serviceItemID, PackActionConfig)
+	return c.GetPackData(context.Background(), POVServiceOwner, PackScopeServiceItem, serviceItemID, PackActionConfig)
 }
 
 // GetPackVerify returns the latest "verify" stage data for the given service item.
 // It returns ErrPackDataNotFound if the verify stage has not produced data yet.
 func (c *Client) GetPackVerify(serviceItemID int) (*PackData, error) {
-	return c.getPackData(serviceItemID, PackActionVerify)
+	return c.GetPackData(context.Background(), POVServiceOwner, PackScopeServiceItem, serviceItemID, PackActionVerify)
 }
 
 // GetPackExecution returns the latest "execution" stage data for the given service item.
 // It returns ErrPackDataNotFound if the execution stage has not produced data yet.
 func (c *Client) GetPackExecution(serviceItemID int) (*PackData, error) {
-	return c.getPackData(serviceItemID, PackActionExecution)
+	return c.GetPackData(context.Background(), POVServiceOwner, PackScopeServiceItem, serviceItemID, PackActionExecution)
 }
 
-// getPackData fetches the latest pack data for a service item at the given pipeline stage.
-// The pack loop is a serviceowner-only workflow, so the POV is fixed to "serviceowner".
-func (c *Client) getPackData(serviceItemID int, action PackActionType) (*PackData, error) {
-	// Construct the URL for the pack stage data (serviceowner POV, service_item scope).
-	// The trailing slash is the canonical DRF route; without it the API replies 301 to the slashed URL.
-	endpoint := fmt.Sprintf("external/serviceowner/pack/data/service_item/%d/%s/", serviceItemID, action)
-	fullURL := c.BaseURL + endpoint
-
-	// Create a context with a timeout for the HTTP request.
-	ctx, cancel := context.WithTimeout(context.Background(), c.RequestTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set required headers.
-	req.Header.Set("Authorization", "Api-Key "+c.APIKey)
-	req.Header.Set("Accept", "application/json")
-
-	// Log the URL being called.
-	log.Println("Calling API URL:", req.URL.String())
-
-	// Execute the HTTP GET request.
-	httpClient := &http.Client{Timeout: c.RequestTimeout * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// A 404 means the stage has not produced data yet - a normal state in the pack loop.
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, ErrPackDataNotFound
-	}
-
-	// Check for successful HTTP status code.
-	if resp.StatusCode != http.StatusOK {
-		body := new(bytes.Buffer)
-		if _, err := body.ReadFrom(resp.Body); err != nil {
-			return nil, fmt.Errorf("failed to read response body: %w", err)
-		}
-		return nil, fmt.Errorf("failed to get pack %s data: %s, %s", action, resp.Status, body.String())
+// GetPackData returns the latest data for one stage of a scoped object's pack pipeline.
+//
+// It returns ErrPackDataNotFound (which unwraps to ErrNotFound) when the stage has not
+// produced data yet - a normal, expected state while a pipeline is still running.
+func (c *Client) GetPackData(
+	ctx context.Context,
+	pov POV,
+	scope PackScope,
+	objectID int,
+	action PackActionType,
+) (*PackData, error) {
+	if !action.IsPipelineStage() {
+		return nil, fmt.Errorf("pack data exists only for the config, verify and execution stages, got %q", action)
 	}
 
 	var response PackData
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	err := c.doRequest(ctx, "GET", packDataPath(pov, scope, objectID, action), nil, &response)
+	if err != nil {
+		// A 404 means the stage has not produced data yet - report it as the sentinel
+		// callers already branch on rather than as a generic failure.
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
+			return nil, ErrPackDataNotFound
+		}
+		return nil, err
 	}
 
 	return &response, nil
+}
+
+// PushPackData writes stage data into a pack pipeline - how an external executor reports the
+// outcome of work the platform delegated to it.
+//
+// The data argument is stored verbatim as the stage's payload; there is no envelope, so pass
+// the object you want the stage to hold (for example {"success": true, "deployed_at": ...}).
+//
+// This is deliberately not idempotent: every call creates a new stage record, because stage
+// data is versioned per run and a skipped push would leave the pipeline waiting forever.
+func (c *Client) PushPackData(
+	ctx context.Context,
+	pov POV,
+	scope PackScope,
+	objectID int,
+	action PackActionType,
+	data any,
+) (*PackData, error) {
+	if !action.IsPipelineStage() {
+		return nil, fmt.Errorf("pack data exists only for the config, verify and execution stages, got %q", action)
+	}
+	if data == nil {
+		return nil, fmt.Errorf("pack data payload cannot be nil")
+	}
+
+	var response PackData
+	if err := c.doRequest(ctx, "POST", packDataPath(pov, scope, objectID, action), data, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+// TriggerPack starts one AI processor for a scoped object and returns the API's confirmation
+// message (e.g. "AI Processor has been triggered").
+//
+// Every trigger invokes the service's LLM and costs real money; the accumulated spend shows up
+// as the pipeline's Cost field. Success means the platform accepted the trigger, not that the
+// run succeeded - poll the pipeline state for the outcome.
+func (c *Client) TriggerPack(
+	ctx context.Context,
+	pov POV,
+	scope PackScope,
+	objectID int,
+	action PackActionType,
+) (string, error) {
+	endpoint := fmt.Sprintf(
+		"external/%s/pack/trigger/%s/%d/%s/",
+		pov.orDefault(), scope.orDefault(), objectID, action,
+	)
+
+	// The API returns a bare JSON string message.
+	var message string
+	if err := c.doRequest(ctx, "POST", endpoint, nil, &message); err != nil {
+		return "", err
+	}
+	return message, nil
 }
 
 // RetriggerPack re-runs the AI pack pipeline for the given service item, always restarting from the
@@ -136,58 +232,34 @@ func (c *Client) getPackData(serviceItemID int, action PackActionType) (*PackDat
 // example, why a previous verify result was rejected); pass "" to send none. On success it returns
 // the confirmation message from the API (e.g. "AI Processor has been retriggered").
 func (c *Client) RetriggerPack(serviceItemID int, serviceownerComment string) (string, error) {
-	// Construct the URL for the pack retrigger (serviceowner POV, service_item scope).
-	endpoint := fmt.Sprintf("external/serviceowner/pack/retrigger/service_item/%d/", serviceItemID)
-	fullURL := c.BaseURL + endpoint
+	return c.RetriggerPackScoped(
+		context.Background(), POVServiceOwner, PackScopeServiceItem, serviceItemID, serviceownerComment,
+	)
+}
 
-	// Create a context with a timeout for the HTTP request.
-	ctx, cancel := context.WithTimeout(context.Background(), c.RequestTimeout)
-	defer cancel()
-
-	// Create the request body with the optional serviceowner comment.
-	body := retriggerPackRequest{ServiceownerComment: serviceownerComment}
-
-	// Marshal the request body into JSON.
-	bodyJSON, err := json.Marshal(body)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal request body: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, io.NopCloser(bytes.NewReader(bodyJSON)))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set required headers.
-	req.Header.Set("Authorization", "Api-Key "+c.APIKey)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-
-	// Log the URL being called.
-	log.Println("Calling API URL:", req.URL.String())
-
-	// Execute the HTTP POST request.
-	httpClient := &http.Client{Timeout: c.RequestTimeout * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check for successful HTTP status code.
-	if resp.StatusCode != http.StatusOK {
-		respBody := new(bytes.Buffer)
-		if _, err := respBody.ReadFrom(resp.Body); err != nil {
-			return "", fmt.Errorf("failed to read response body: %w", err)
-		}
-		return "", fmt.Errorf("failed to retrigger pack. Details: %s, %s", resp.Status, respBody.String())
-	}
+// RetriggerPackScoped re-runs a scoped object's pack pipeline, always restarting from the config
+// stage regardless of how far the previous run got.
+//
+// The optional comment is folded into the AI processor's prompt as feedback - typically why the
+// previous render was rejected, which is what makes the loop self-healing. Pass "" to send none.
+//
+// Like TriggerPack, this costs an LLM run.
+func (c *Client) RetriggerPackScoped(
+	ctx context.Context,
+	pov POV,
+	scope PackScope,
+	objectID int,
+	comment string,
+) (string, error) {
+	endpoint := fmt.Sprintf(
+		"external/%s/pack/retrigger/%s/%d/",
+		pov.orDefault(), scope.orDefault(), objectID,
+	)
 
 	// The API returns a bare JSON string message, e.g. "AI Processor has been retriggered".
 	var message string
-	if err := json.NewDecoder(resp.Body).Decode(&message); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+	if err := c.doRequest(ctx, "POST", endpoint, retriggerPackRequest{ServiceownerComment: comment}, &message); err != nil {
+		return "", err
 	}
-
 	return message, nil
 }
