@@ -186,7 +186,144 @@ fmt.Println(msg) // e.g. "AI Processor has been retriggered"
 The three getters return `ErrPackDataNotFound` (check with `errors.Is`) when a stage has not produced
 data yet. Read the generated payload from `PackData.Data` and unmarshal it into your own type.
 
+### Driving the pack pipeline
+
+The getters above watch a run. These drive one. All of them take a `context.Context`, a `POV` and a
+`PackScope` (`PackScopeServiceItem` or `PackScopeService`), so both scopes and both points of view are
+reachable.
+
+```go
+ctx := context.Background()
+
+// Start one processor stage. Trigger accepts all five action types, including
+// PackActionOptimiser and PackActionChangeInstanceValidator.
+msg, err := nc.TriggerPack(ctx, client.POVServiceOwner, client.PackScopeServiceItem, 389,
+    client.PackActionConfig)
+
+// Report a stage result into a run. The body is stored verbatim as the stage's data,
+// so pass the object you want the stage to hold.
+_, err = nc.PushPackData(ctx, client.POVServiceOwner, client.PackScopeServiceItem, 389,
+    client.PackActionExecution, map[string]any{"success": true, "deployed_at": deployedAt})
+
+// Retrigger from config with feedback the AI folds into its prompt.
+msg, err = nc.RetriggerPackScoped(ctx, client.POVServiceOwner, client.PackScopeServiceItem, 389,
+    "the health endpoint is TCP-only, use a tcp monitor")
+```
+
+> Every trigger invokes the service's LLM and costs real money; the spend accumulates on the
+> pipeline's `Cost`. Success means the platform accepted the trigger, not that the run succeeded.
+
+### Pack pipelines
+
+A pipeline is one recorded run. Everything on it except `Applied` is produced by the platform.
+
+```go
+// The executor work queue: successful runs nobody has acted on yet.
+applied := false
+queue, err := nc.ListPackPipelines(ctx, &client.ListPackPipelinesRequest{
+    State:   []string{string(client.PackPipelineOK)},
+    Applied: &applied,
+})
+
+// Poll a run to a terminal state after triggering.
+run, err := nc.GetLatestPackPipeline(ctx, client.POVServiceOwner, client.PackScopeServiceItem, 389)
+
+// Cheaper change detection: bare {id, version} pairs.
+versions, err := nc.ListPackPipelineVersions(ctx, client.POVServiceOwner,
+    client.PackScopeServiceItem, 389)
+
+// Take a run off the queue once you have reported its result.
+_, err = nc.SetPackPipelineApplied(ctx, client.POVServiceOwner, run.ID, true)
+```
+
+`Applied` is a `*bool` on the request deliberately: `applied=false` is a meaningful query, and must
+survive the "drop unset filters" pass rather than being mistaken for absent.
+
+### AI processors, pack profiles and the LLM catalogue
+
+The provisioning half - what you set up once per service before any pipeline can run.
+
+```go
+// LLM models are platform-global (no POV) and read-only: the platform accepts model
+// writes only from superuser GUI sessions, so this SDK deliberately has none.
+model, err := nc.FindLLMModelByName(ctx, "Claude 4.6")
+
+// A processor renders (config), checks (verify) or executes. Identity is the
+// (service, action_type) pair.
+processor, err := nc.CreateAIProcessor(ctx, client.POVServiceOwner, &client.AIProcessorWrite{
+    Service:    client.RefID(49),
+    ActionType: client.PackActionConfig,
+    Name:       "vip_config",
+    LLMModel:   client.RefID(model.ID),
+    Prompt:     "Render F5 AS3 for the VIRTUAL_SERVER declaration...",
+    ExtraData:  map[string]any{"enable_pack_context": true},
+})
+
+// Updates take a partial patch - the API applies partial-PATCH semantics, and a
+// full write would reset server defaults you never declared.
+_, err = nc.UpdateAIProcessor(ctx, client.POVServiceOwner, processor.ID,
+    map[string]any{"prompt": revisedPrompt})
+
+// pack_enabled is the per-service master switch. Nothing runs without it.
+enabled := true
+_, err = nc.CreatePackProfile(ctx, client.POVServiceOwner, &client.PackProfileWrite{
+    Service:     client.RefID(49),
+    PackEnabled: &enabled,
+})
+```
+
+### Deployed items
+
+A versioned JSON record of what was actually deployed to satisfy a service item.
+
+```go
+item, err := nc.CreateDeployedItem(ctx, client.POVServiceOwner, &client.DeployedItemWrite{
+    ServiceItemID: 389,
+    Data:          json.RawMessage(`{"vs_name":"vs_demo","vip":"10.1.10.198"}`),
+})
+```
+
+Two behaviours to know: a create whose data repeats the previous version byte-for-byte returns 200
+with the *existing* record and `"no change detected"` rather than a 201, so success is not proof a new
+version exists - compare `Version`. And because items are versioned, filtering by service item returns
+a history; `FindDeployedItemForServiceItem` returns the highest version.
+
+## Errors
+
+Every non-2xx response becomes an `*APIError` carrying the status code and the server's own
+explanation, which for a 400 is the validation payload. It unwraps to a sentinel, so callers branch
+without string matching:
+
+```go
+item, err := nc.GetServiceItem(ctx, client.POVServiceOwner, 389)
+switch {
+case errors.Is(err, client.ErrNotFound):
+    // the object is gone - drift, not a failure
+case errors.Is(err, client.ErrForbidden):
+    // the key's team does not own this, or the POV is wrong
+case errors.Is(err, client.ErrServerUnavailable):
+    // transient, retry
+}
+
+var apiErr *client.APIError
+if errors.As(err, &apiErr) {
+    log.Printf("status %d: %s", apiErr.StatusCode, apiErr.Body)
+}
+```
+
+Sentinels: `ErrNotFound`, `ErrUnauthorized`, `ErrForbidden`, `ErrBadRequest`, `ErrServerUnavailable`,
+plus `ErrPackDataNotFound` (which itself unwraps to `ErrNotFound`).
+
 ## Configuration
+
+The base URL may be given with or without the `/v1` suffix - both forms produce the same client.
+
+Two optional fields on `Client` cover the cases `NewClient` does not:
+
+```go
+nc.HTTPClient = &http.Client{Transport: myTransport} // custom CA, proxy, instrumentation
+nc.Logger = log.Default()                            // one line per request; nil is silent
+```
 
 Configure the client with the following options:
 
