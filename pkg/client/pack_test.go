@@ -110,7 +110,7 @@ func TestClientGetPackData(t *testing.T) { //nolint:funlen
 		pd, err := nc.GetPackConfig(42)
 		require.Error(t, err)
 		assert.Nil(t, pd)
-		assert.ErrorIs(t, err, client.ErrPackDataNotFound)
+		require.ErrorIs(t, err, client.ErrPackDataNotFound)
 	})
 
 	t.Run("GetPackConfig returns error on 500", func(t *testing.T) {

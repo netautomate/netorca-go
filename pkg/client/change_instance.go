@@ -1,13 +1,9 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
-	"net/http"
 	"net/url"
 	"strconv"
 	"time"
@@ -201,18 +197,39 @@ type UpdateChangeInstanceRequest struct {
 
 	// State is the new state of the change instance (e.g., "APPROVED", "REJECTED").
 	State ChangeInstanceState `json:"state"`
-	// Log is a string containing the log or message associated with the change instance.
-	Log string `json:"log"`
-	// DeployedItem is the deployed item associated with the change instance.
-	DeployedItem json.RawMessage `json:"deployed_item"`
+	// Log is the reason for the transition, recorded against the change. Omitted when empty so
+	// a transition that says nothing leaves any existing log intact rather than blanking it.
+	Log string `json:"log,omitempty"`
+	// DeployedItem records what was built to serve the request.
+	//
+	// The omitempty is load-bearing, not cosmetic. json.RawMessage is a []byte, and a nil one
+	// marshals to the literal null rather than disappearing - so without this, passing nil
+	// sends {"deployed_item": null} and the API rejects the whole transition with
+	// {"deployed_item":["This field may not be null."]}. That made the most natural call in
+	// the package - approving a change without asserting anything about deployment - fail
+	// every time.
+	DeployedItem json.RawMessage `json:"deployed_item,omitempty"`
 }
 
 // GetChangeInstances is a method on Client that fetches change instances from the API using
 // the provided filters. It builds the endpoint URL based on the POV, converts the filters into
 // a query parameter string, sets up the HTTP GET request with necessary headers and a timeout,
 // and decodes the JSON response into a GetChangeInstancesResponse object.
+// Prefer GetChangeInstancesWithContext where a context is available - it lets the caller
+// cancel the request, which matters for anything long-running.
 func (c *Client) GetChangeInstances(filters *GetChangeInstancesRequest) (*GetChangeInstancesResponse, error) {
-	pov := filters.POV
+	return c.GetChangeInstancesWithContext(context.Background(), filters)
+}
+
+// GetChangeInstancesWithContext fetches change instances matching the given filters, honouring
+// the caller's context for cancellation and deadlines.
+func (c *Client) GetChangeInstancesWithContext(
+	ctx context.Context,
+	filters *GetChangeInstancesRequest,
+) (*GetChangeInstancesResponse, error) {
+	if filters == nil {
+		filters = &GetChangeInstancesRequest{}
+	}
 
 	// Convert the filters to a URL query string.
 	params, err := filters.ToQueryParams()
@@ -220,45 +237,32 @@ func (c *Client) GetChangeInstances(filters *GetChangeInstancesRequest) (*GetCha
 		return nil, fmt.Errorf("failed to convert filters to query params: %w", err)
 	}
 
-	// Construct the URL using the base URL, POV, and query parameters.
-	endpoint := fmt.Sprintf("orcabase/%s/change_instances?%s", pov, params)
-	fullURL := c.BaseURL + endpoint
-
-	// Create a context with a timeout for the HTTP request.
-	ctx, cancel := context.WithTimeout(context.Background(), c.RequestTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	// The trailing slash is the canonical DRF route; without it the API replies 301 to the
+	// slashed URL, doubling the round trips.
+	endpoint := fmt.Sprintf("orcabase/%s/change_instances/", POV(filters.POV).orDefault())
+	if params != "" {
+		endpoint += "?" + params
 	}
 
-	// Set required headers.
-	req.Header.Set("Authorization", "Api-Key "+c.APIKey)
-	req.Header.Set("Accept", "application/json")
-
-	// Log the URL being called.
-	log.Println("Calling API URL:", req.URL.String())
-
-	// Execute the HTTP GET request.
-	httpClient := &http.Client{Timeout: c.RequestTimeout * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check for successful HTTP status code.
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get change instances: %s", resp.Status)
-	}
-
-	// Decode the JSON response into the GetChangeInstancesResponse structure.
 	var response GetChangeInstancesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if err := c.doRequest(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, err
 	}
+	return &response, nil
+}
 
+// GetChangeInstance fetches a single change instance by id.
+//
+// It returns an error wrapping ErrNotFound when no such change exists, which lets a caller
+// reconciling state (a Terraform provider, say) tell "removed" from "request failed" without
+// listing and scanning.
+func (c *Client) GetChangeInstance(ctx context.Context, pov POV, id int) (*ChangeInstance, error) {
+	endpoint := fmt.Sprintf("orcabase/%s/change_instances/%d/", pov.orDefault(), id)
+
+	var response ChangeInstance
+	if err := c.doRequest(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, err
+	}
 	return &response, nil
 }
 
@@ -292,67 +296,44 @@ func (c *Client) PendingChangeInstance(id int, logStr string, deployedItem json.
 	return c.updateChangeInstanceState(id, ChangeInstancePENDING, logStr, deployedItem)
 }
 
-func (c *Client) updateChangeInstanceState(
+// UpdateChangeInstanceState transitions a change instance to the given state, honouring the
+// caller's context.
+//
+// The log string is recorded against the change as the reason for the transition, and is what a
+// consumer reads when their request is rejected - write it for them, not for a machine. Pass a
+// nil deployedItem to leave the linked deployed item untouched.
+//
+// The platform enforces which transitions are legal (a COMPLETED change must have been APPROVED,
+// for instance); an illegal one comes back as an error wrapping ErrBadRequest.
+func (c *Client) UpdateChangeInstanceState(
+	ctx context.Context,
+	pov POV,
 	id int,
 	state ChangeInstanceState,
 	logStr string,
 	deployedItem json.RawMessage,
 ) (*ChangeInstance, error) {
-	// Construct the URL for the change instance.
-	endpoint := fmt.Sprintf("orcabase/serviceowner/change_instances/%d/", id)
-	fullURL := c.BaseURL + endpoint
+	endpoint := fmt.Sprintf("orcabase/%s/change_instances/%d/", pov.orDefault(), id)
 
-	// Create a context with a timeout for the HTTP request.
-	ctx, cancel := context.WithTimeout(context.Background(), c.RequestTimeout)
-	defer cancel()
-
-	// Create the request body with the new state and log message.
 	body := UpdateChangeInstanceRequest{
 		State:        state,
 		Log:          logStr,
 		DeployedItem: deployedItem,
 	}
 
-	// Marshal the request body into JSON.
-	bodyJSON, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request body: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "PATCH", fullURL, io.NopCloser(bytes.NewReader(bodyJSON)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set required headers.
-	req.Header.Set("Authorization", "Api-Key "+c.APIKey)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-
-	// Log the URL being called.
-	log.Println("Calling API URL:", req.URL.String())
-
-	// Execute the HTTP PATCH request.
-	httpClient := &http.Client{Timeout: c.RequestTimeout * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check for successful HTTP status code.
-	if resp.StatusCode != http.StatusOK {
-		bodyJSON := new(bytes.Buffer)
-		if _, err := bodyJSON.ReadFrom(resp.Body); err != nil {
-			return nil, fmt.Errorf("failed to read response body: %w", err)
-		}
-		return nil, fmt.Errorf("failed to update change instance state. Details: %s, %s", resp.Status, bodyJSON.String())
-	}
-
 	var response ChangeInstance
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if err := c.doRequest(ctx, "PATCH", endpoint, body, &response); err != nil {
+		return nil, err
 	}
-
 	return &response, nil
+}
+
+// updateChangeInstanceState is the serviceowner-POV shorthand the state-specific helpers use.
+func (c *Client) updateChangeInstanceState(
+	id int,
+	state ChangeInstanceState,
+	logStr string,
+	deployedItem json.RawMessage,
+) (*ChangeInstance, error) {
+	return c.UpdateChangeInstanceState(context.Background(), POVServiceOwner, id, state, logStr, deployedItem)
 }

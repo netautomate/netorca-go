@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
 	"net/url"
 	"strconv"
 	"time"
@@ -170,43 +168,53 @@ type Team struct {
 // GetServiceItems fetches service items from the API using the provided filters.
 // Requires a POV (point of view) to be set in the filters.
 // The filters are used to filter the service items returned by the API.
+//
+// Prefer GetServiceItemsWithContext where a context is available - it lets the caller
+// cancel the request, which matters for anything long-running.
 func (c *Client) GetServiceItems(filters *GetServiceItemsRequest) (*GetServiceItemsResponse, error) {
-	pov := filters.POV
+	return c.GetServiceItemsWithContext(context.Background(), filters)
+}
+
+// GetServiceItemsWithContext fetches service items matching the given filters, honouring the
+// caller's context for cancellation and deadlines.
+func (c *Client) GetServiceItemsWithContext(
+	ctx context.Context,
+	filters *GetServiceItemsRequest,
+) (*GetServiceItemsResponse, error) {
+	if filters == nil {
+		filters = &GetServiceItemsRequest{}
+	}
 
 	params, err := filters.ToQueryParams()
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert filters to query params: %w", err)
 	}
 
-	url := c.BaseURL + fmt.Sprintf("orcabase/%s/service_items?%s", pov, params)
-
-	// set timeout
-	ctx, cancel := context.WithTimeout(context.Background(), c.RequestTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Api-Key "+c.APIKey)
-	req.Header.Set("Accept", "application/json")
-
-	log.Println("Calling API url:", req.URL.String())
-
-	client := &http.Client{Timeout: c.RequestTimeout * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get service items: %s", resp.Status)
+	// The trailing slash is the canonical DRF route; without it the API replies 301 to the
+	// slashed URL, doubling the round trips.
+	endpoint := fmt.Sprintf("orcabase/%s/service_items/", POV(filters.POV).orDefault())
+	if params != "" {
+		endpoint += "?" + params
 	}
 
 	var response GetServiceItemsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if err := c.doRequest(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, err
 	}
+	return &response, nil
+}
 
+// GetServiceItem fetches a single service item by id.
+//
+// It returns an error wrapping ErrNotFound when no such item exists, which lets a caller
+// reconciling state (a Terraform provider, say) tell "removed" from "request failed" without
+// listing and scanning.
+func (c *Client) GetServiceItem(ctx context.Context, pov POV, id int) (*ServiceItem, error) {
+	endpoint := fmt.Sprintf("orcabase/%s/service_items/%d/", pov.orDefault(), id)
+
+	var response ServiceItem
+	if err := c.doRequest(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, err
+	}
 	return &response, nil
 }

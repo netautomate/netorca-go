@@ -154,7 +154,7 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 	t.Run("Test NewClient returns empty response with 200 when no filters matched", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/",
 			httpmock.NewStringResponder(200, `{
 			"count": 0,
 			"next": null,
@@ -190,7 +190,7 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 		defer httpmock.DeactivateAndReset()
 		// Register a mock response for the GET request with real data
 		testFileContent := readTestFile(t, "200_single_change_instance_response.json")
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/",
 			httpmock.NewStringResponder(200, testFileContent),
 		)
 
@@ -258,7 +258,7 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 	t.Run("Test GetChangeInstances when api responds with 500", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/",
 			httpmock.NewStringResponder(500, `{"error": "Internal Server Error"}`),
 		)
 
@@ -279,12 +279,12 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 		changeInstances, err := nc.GetChangeInstances(filters)
 		require.Error(t, err)
 		assert.Nil(t, changeInstances)
-		assert.Equal(t, "failed to get change instances: 500 Internal Server Error", err.Error())
+		require.ErrorContains(t, err, "500 Internal Server Error")
 	})
 	t.Run("Test GetChangeInstances when api responds with 400", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
-		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances",
+		httpmock.RegisterResponder("GET", "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/",
 			httpmock.NewStringResponder(400, `{"error": "Bad Request"}`),
 		)
 
@@ -305,7 +305,7 @@ func TestClientGetChangeInstances(t *testing.T) { //nolint:funlen
 		changeInstances, err := nc.GetChangeInstances(filters)
 		require.Error(t, err)
 		assert.Nil(t, changeInstances)
-		assert.Equal(t, "failed to get change instances: 400 Bad Request", err.Error())
+		require.ErrorIs(t, err, client.ErrBadRequest)
 	},
 	)
 }
@@ -614,11 +614,10 @@ func TestClientSetErrorChangeInstance(t *testing.T) { //nolint:funlen
 		changeInstance, err := nc.SetErrorChangeInstance(53, "test log", json.RawMessage(`{"comment": "error"}`))
 		require.Error(t, err)
 		assert.Nil(t, changeInstance)
-		assert.Equal(
-			t,
-			`failed to update change instance state. Details: 400 Bad Request, {"error": "Bad Request"}`,
-			err.Error(),
-		)
+		// The failure surfaces as an APIError carrying the server's own explanation, so a
+		// caller can both branch on the status and show the practitioner why it was rejected.
+		require.ErrorIs(t, err, client.ErrBadRequest)
+		require.ErrorContains(t, err, `{"error": "Bad Request"}`)
 	})
 	t.Run("Test CompleteChangeInstance when api responds with 200", func(t *testing.T) {
 		httpmock.Activate()
@@ -645,5 +644,61 @@ func TestClientSetErrorChangeInstance(t *testing.T) { //nolint:funlen
 		assert.Equal(t, string(client.ChangeInstanceERROR), changeInstance.State)
 		assert.Equal(t, "test log", changeInstance.Log)
 		assert.JSONEq(t, `{"comment":"error"}`, string(changeInstance.ServiceItem.DeployedItem))
+	})
+}
+
+// TestUpdateChangeInstanceOptionalFields pins the omitempty behaviour on the transition body.
+//
+// It exists because a live run caught the opposite: json.RawMessage is a []byte, and a nil one
+// marshals to the literal null rather than being omitted, so the API rejected every transition
+// that did not also assert a deployed item. Mocked tests never noticed because they all passed
+// one.
+func TestUpdateChangeInstanceOptionalFields(t *testing.T) {
+	const patchURL = "http://api-aws.demo.netorca.io/v1/orcabase/serviceowner/change_instances/53/"
+
+	t.Run("a nil deployed item is omitted, not sent as null", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedBody string
+		httpmock.RegisterResponder("PATCH", patchURL,
+			captureBodyResponder(&capturedBody, 200, `{"id":53,"state":"APPROVED"}`))
+
+		nc := newPackTestClient(t)
+		_, err := nc.ApproveChangeInstance(53, "looks good", nil)
+
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"state":"APPROVED","log":"looks good"}`, capturedBody)
+		assert.NotContains(t, capturedBody, "deployed_item")
+	})
+
+	t.Run("an empty log is omitted so it does not blank an existing one", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedBody string
+		httpmock.RegisterResponder("PATCH", patchURL,
+			captureBodyResponder(&capturedBody, 200, `{"id":53,"state":"APPROVED"}`))
+
+		nc := newPackTestClient(t)
+		_, err := nc.ApproveChangeInstance(53, "", nil)
+
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"state":"APPROVED"}`, capturedBody)
+	})
+
+	t.Run("a supplied deployed item still goes on the wire", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		var capturedBody string
+		httpmock.RegisterResponder("PATCH", patchURL,
+			captureBodyResponder(&capturedBody, 200, `{"id":53,"state":"COMPLETED"}`))
+
+		nc := newPackTestClient(t)
+		_, err := nc.CompleteChangeInstance(53, "deployed", json.RawMessage(`{"vip":"10.1.1.1"}`))
+
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"state":"COMPLETED","log":"deployed","deployed_item":{"vip":"10.1.1.1"}}`, capturedBody)
 	})
 }
