@@ -171,6 +171,90 @@ func (c *Client) GetPackData(
 	return &response, nil
 }
 
+// GetPackDataByID returns a single pack data record by its own id, rather than by the object and
+// stage it belongs to.
+//
+// Use it to re-read a record whose id you already hold - one embedded in a pipeline run, or one
+// PushPackData just returned - which is how a caller reads back exactly the record it saw rather
+// than whatever the stage's newest has since become.
+//
+// Unlike GetPackData, a 404 here is a plain error wrapping ErrNotFound and not
+// ErrPackDataNotFound: an unknown id is a bad reference, whereas a stage with no data yet is a
+// normal phase of a running pipeline, and the two should not be handled alike.
+func (c *Client) GetPackDataByID(ctx context.Context, pov POV, id int) (*PackData, error) {
+	endpoint := fmt.Sprintf("external/%s/pack/data/%d/", pov.orDefault(), id)
+
+	var response PackData
+	if err := c.doRequest(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+// ListPackDataRequest paginates a pack data listing.
+//
+// There is deliberately nothing to filter on. The pack data view declares no filterset, so the
+// platform silently ignores every query parameter beyond the paginator's limit and offset and
+// the ordering backend's ordering - a filter sent here is dropped rather than rejected, which is
+// worse than an error because the caller gets a plausible, unfiltered answer back. Narrow the
+// results with Ordering and Limit, or use GetPackData when you know the object and stage.
+type ListPackDataRequest struct {
+	// POV is the point of view to query from. Defaults to serviceowner.
+	POV POV
+	// Limit caps the number of results returned. Zero means no cap.
+	Limit int
+	// Offset skips this many results.
+	Offset int
+	// Ordering names the field to sort by; prefix with "-" to reverse. "-created" is the
+	// useful one: it puts the newest records first.
+	Ordering string
+}
+
+// ToQueryParams renders the pagination parameters as a percent-encoded query string, "" when
+// empty. It cannot fail, unlike its siblings, because nothing here needs encoding as JSON.
+func (r *ListPackDataRequest) ToQueryParams() string {
+	params := newQueryParams()
+	params.SetInt("limit", r.Limit)
+	params.SetInt("offset", r.Offset)
+	params.SetString("ordering", r.Ordering)
+	return params.Encode()
+}
+
+// ListPackDataResponse is the paginated envelope the API returns for a pack data listing.
+type ListPackDataResponse struct {
+	// Count is the total number of records visible to the API key, across all pages.
+	Count int `json:"count"`
+	// Next is the URL of the next page, nil on the last page.
+	Next *string `json:"next"`
+	// Previous is the URL of the previous page, nil on the first page.
+	Previous *string `json:"previous"`
+	// Results is this page of records.
+	Results []PackData `json:"results"`
+}
+
+// ListPackData returns pack data records across every object and stage the API key can see,
+// newest-first if you ask for it with Ordering.
+//
+// The listing is unfiltered by design (see ListPackDataRequest), so it is a sweep rather than a
+// lookup: reach for it to audit what the pipelines have produced recently, and for a specific
+// object's stage use GetPackData, which asks the platform to do the narrowing.
+func (c *Client) ListPackData(
+	ctx context.Context,
+	filters *ListPackDataRequest,
+) (*ListPackDataResponse, error) {
+	if filters == nil {
+		filters = &ListPackDataRequest{}
+	}
+
+	endpoint := fmt.Sprintf("external/%s/pack/data/%s", filters.POV.orDefault(), filters.ToQueryParams())
+
+	var response ListPackDataResponse
+	if err := c.doRequest(ctx, "GET", endpoint, nil, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
 // PushPackData writes stage data into a pack pipeline - how an external executor reports the
 // outcome of work the platform delegated to it.
 //

@@ -28,6 +28,13 @@ const (
 type GetChangeInstancesRequest struct {
 	// The POV (point of view) is used to determine the API path(serviceowner or consumer).
 	POV string `json:"pov"`
+	// ApplicationID is the ID of the application owning the change instance's service item.
+	// Comma-join several to get an "in" lookup (an OR), as with the other id filters here.
+	//
+	// This is the filter a per-application view needs: a change instance carries no direct
+	// link to an application, so without it a caller has to list every change instance and
+	// sift them client-side.
+	ApplicationID string `json:"application_id"`
 	// ChangeType is the type of change instance (e.g., "CREATE", "UPDATE", "DELETE").
 	ChangeType string `json:"change_type"`
 	// CommitID is the ID of the commit associated with the submission.
@@ -40,6 +47,8 @@ type GetChangeInstancesRequest struct {
 	DeclarationContains string `json:"declaration_contains"`
 	// DeclarationRegex is a regex pattern to match against the declaration.
 	DeclarationRegex string `json:"declaration_regex"`
+	// EndDate restricts results to change instances modified at or before this time.
+	EndDate time.Time `json:"end_date"`
 	// ExcludeReferenced indicates whether to exclude referenced change instances.
 	ExcludeReferenced bool `json:"exclude_referenced"`
 	// Limit is the maximum number of results to return per page.
@@ -58,6 +67,11 @@ type GetChangeInstancesRequest struct {
 	ServiceName string `json:"service_name"`
 	// ServiceOwnerTeamID is the ID of the service owner team associated with the change instance.
 	ServiceOwnerTeamID string `json:"service_owner_team_id"`
+	// StartDate restricts results to change instances modified at or after this time. It is
+	// the same lower bound Modified already applies - the backend declares both against
+	// modified with a gte lookup - and exists so a window can be expressed as one pair of
+	// fields alongside EndDate. Set one or the other, not both.
+	StartDate time.Time `json:"start_date"`
 	// State is the state of the change instance (e.g., "PENDING", "APPROVED", "REJECTED").
 	State string `json:"state"`
 	// SubmissionID is the ID of the submission associated with the change instance.
@@ -65,9 +79,14 @@ type GetChangeInstancesRequest struct {
 }
 
 // ToQueryParams converts the GetChangeInstancesRequest fields into a URL-encoded query string.
+//
+//nolint:funlen // one flat branch per filter; splitting it would only hide which filters exist
 func (r *GetChangeInstancesRequest) ToQueryParams() (string, error) {
 	params := url.Values{}
 
+	if r.ApplicationID != "" {
+		params.Add("application_id", r.ApplicationID)
+	}
 	if r.ChangeType != "" {
 		params.Add("change_type", r.ChangeType)
 	}
@@ -85,6 +104,9 @@ func (r *GetChangeInstancesRequest) ToQueryParams() (string, error) {
 	}
 	if r.DeclarationRegex != "" {
 		params.Add("declaration_regex", r.DeclarationRegex)
+	}
+	if !r.EndDate.IsZero() {
+		params.Add("end_date", r.EndDate.Format(time.RFC3339))
 	}
 	if r.ExcludeReferenced {
 		params.Add("exclude_referenced", strconv.FormatBool(r.ExcludeReferenced))
@@ -112,6 +134,9 @@ func (r *GetChangeInstancesRequest) ToQueryParams() (string, error) {
 	}
 	if r.ServiceOwnerTeamID != "" {
 		params.Add("service_owner_team_id", r.ServiceOwnerTeamID)
+	}
+	if !r.StartDate.IsZero() {
+		params.Add("start_date", r.StartDate.Format(time.RFC3339))
 	}
 	if r.State != "" {
 		params.Add("state", r.State)
@@ -227,6 +252,53 @@ func (c *Client) GetChangeInstancesWithContext(
 	ctx context.Context,
 	filters *GetChangeInstancesRequest,
 ) (*GetChangeInstancesResponse, error) {
+	return c.listChangeInstances(ctx, filters, "")
+}
+
+// GetDependantChangeInstances fetches the change instances raised against services your team
+// owns but handed to a different team to fulfil - the copies your dependant teams are working
+// on, which the plain listing hides because it only shows changes your own team owns.
+//
+// This is the main team's view of its dependants' progress, and so is the mirror image of
+// GetDependantServiceItems, which shows the items where your team is itself the dependant.
+//
+// It takes the same filters and returns the same paginated shape as
+// GetChangeInstancesWithContext, except that the backend swaps out the whole filter backend
+// chain on this route, dropping the ordering backend with it - so Ordering is accepted but has
+// no effect here.
+func (c *Client) GetDependantChangeInstances(
+	ctx context.Context,
+	filters *GetChangeInstancesRequest,
+) (*GetChangeInstancesResponse, error) {
+	return c.listChangeInstances(ctx, filters, "dependant/")
+}
+
+// GetReferencedChangeInstances fetches the referenced change instances your team can see: those
+// raised on somebody else's service item because it names one of your items in its related list.
+//
+// When a consumer's load balancer declares your virtual machine as related, a change to that
+// machine raises a MODIFY change on the load balancer. That change belongs to the load
+// balancer's service owner, not to you, so it never appears in your plain listing - but you are
+// the reason it exists, and this route is how you see it.
+//
+// It is the complement of the ExcludeReferenced filter, which removes exactly this class of
+// change from the plain listing. The same ordering caveat as GetDependantChangeInstances
+// applies.
+func (c *Client) GetReferencedChangeInstances(
+	ctx context.Context,
+	filters *GetChangeInstancesRequest,
+) (*GetChangeInstancesResponse, error) {
+	return c.listChangeInstances(ctx, filters, "referenced/")
+}
+
+// listChangeInstances performs one change instance listing, against either the plain route (an
+// empty action) or one of its extra list routes. They share a filter set and a response shape,
+// so the only thing that varies is the path segment.
+func (c *Client) listChangeInstances(
+	ctx context.Context,
+	filters *GetChangeInstancesRequest,
+	action string,
+) (*GetChangeInstancesResponse, error) {
 	if filters == nil {
 		filters = &GetChangeInstancesRequest{}
 	}
@@ -239,7 +311,7 @@ func (c *Client) GetChangeInstancesWithContext(
 
 	// The trailing slash is the canonical DRF route; without it the API replies 301 to the
 	// slashed URL, doubling the round trips.
-	endpoint := fmt.Sprintf("orcabase/%s/change_instances/", POV(filters.POV).orDefault())
+	endpoint := fmt.Sprintf("orcabase/%s/change_instances/%s", POV(filters.POV).orDefault(), action)
 	if params != "" {
 		endpoint += "?" + params
 	}
@@ -264,6 +336,54 @@ func (c *Client) GetChangeInstance(ctx context.Context, pov POV, id int) (*Chang
 		return nil, err
 	}
 	return &response, nil
+}
+
+// ChangeInstanceHistoryEntry is one recorded step in a change instance's life.
+//
+// The platform tracks only state and log changes, so the trail is a record of decisions - who
+// approved or rejected the change and why - rather than of every field it touched along the way.
+type ChangeInstanceHistoryEntry struct {
+	// ID is the change instance the entry belongs to, not the entry's own identifier: the
+	// platform serialises the tracked object's id, so every entry in one trail repeats it.
+	// Entries are told apart by Modified and Reason.
+	ID int `json:"id"`
+	// State is the state the change held at this point, rendered as its name ("PENDING",
+	// "APPROVED") rather than the integer the database stores.
+	State string `json:"state"`
+	// Log is the message recorded with the transition - the explanation a consumer reads when
+	// their request is rejected. Empty when the transition carried none.
+	Log string `json:"log"`
+	// Modified is when the entry was recorded. Entries arrive newest first.
+	Modified time.Time `json:"modified"`
+	// Reason is which of the two tracked fields moved: "state" or "log".
+	Reason string `json:"reason"`
+	// ChangedBy is the username behind the change, or an API key's name suffixed " (Api Key)"
+	// when a key made it. It reads "SYSTEM" for a transition the platform made itself.
+	ChangedBy *string `json:"changed_by"`
+	// ChangedByTeam is the team the actor was acting for, nil when the platform cannot
+	// attribute the change to one - a user who has since left the team, for instance.
+	ChangedByTeam *string `json:"changed_by_team"`
+}
+
+// ListChangeInstanceHistory returns a change instance's state and log history, newest first.
+//
+// This is the audit trail behind a change: who approved or rejected it, when, and with what
+// explanation. It is the only way to recover a superseded log message, because a later
+// transition overwrites the change's own Log field.
+//
+// It returns an error wrapping ErrNotFound when no such change exists.
+func (c *Client) ListChangeInstanceHistory(
+	ctx context.Context,
+	pov POV,
+	id int,
+) ([]ChangeInstanceHistoryEntry, error) {
+	endpoint := fmt.Sprintf("orcabase/%s/change_instances/%d/history/", pov.orDefault(), id)
+
+	var raw json.RawMessage
+	if err := c.doRequest(ctx, "GET", endpoint, nil, &raw); err != nil {
+		return nil, err
+	}
+	return decodeHistoryList[ChangeInstanceHistoryEntry](raw, "change instance")
 }
 
 // ApproveChangeInstance approves a change instance by updating its state to "APPROVED".
