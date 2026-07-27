@@ -308,10 +308,11 @@ func (c *Client) GetDeployedItem(ctx context.Context, pov POV, id int) (*Deploye
 // FindDeployedItemForServiceItem returns the current deployed item for a service item.
 //
 // This is the call that reconciles identity. A deployed item's natural key is its parent, not
-// its id, because every accepted write records a new version rather than editing the last
-// one - so a Terraform provider that remembered an id would go on reading a superseded
-// version forever. Looking the current one up by service item is the only stable way to ask
-// "what does the platform think is deployed here".
+// its id: a create cuts a new version rather than editing the last, so a caller that remembered
+// an id from an earlier create would go on reading a superseded version. Looking the current
+// one up by service item is the stable way to ask "what does the platform think is deployed
+// here" - an in-place update rewrites the current version, but which record is current can only
+// be answered by parent.
 //
 // "Current" means the highest version, which is what the platform itself resolves a service
 // item's deployed item to. It returns an error wrapping ErrNotFound when the service item has
@@ -321,30 +322,47 @@ func (c *Client) FindDeployedItemForServiceItem(
 	pov POV,
 	serviceItemID int,
 ) (*DeployedItem, error) {
-	response, err := c.ListDeployedItems(ctx, &ListDeployedItemsRequest{
-		POV:           pov,
-		ServiceItemID: []int{serviceItemID},
-		// Newest first, so the current version lands on the first page even for a service
-		// item with a long history. The scan below does not depend on this being honoured.
-		Ordering: "-version",
-	})
-	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to look up the deployed item for service item %d: %w", serviceItemID, err,
-		)
+	// The current record is the highest version, and a service item's history can run past one
+	// page - 32 versions against a page size of 20 has been seen. Taking the max over a single
+	// page returns a stale version the moment the history outgrows a page, so this pages through
+	// every result and takes the true max. Because it scans everything, the answer does not
+	// depend on the server honouring any particular ordering.
+	const pageSize = 100
+
+	var current *DeployedItem
+	seen := 0
+	for offset := 0; ; offset += pageSize {
+		response, err := c.ListDeployedItems(ctx, &ListDeployedItemsRequest{
+			POV:           pov,
+			ServiceItemID: []int{serviceItemID},
+			Limit:         pageSize,
+			Offset:        offset,
+		})
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to look up the deployed item for service item %d: %w", serviceItemID, err,
+			)
+		}
+
+		for index := range response.Results {
+			if current == nil || response.Results[index].Version > current.Version {
+				candidate := response.Results[index]
+				current = &candidate
+			}
+		}
+
+		// Stop on a short page or once every counted item has been read. Guarding on Count as
+		// well as page length means a server that ignores the limit cannot spin this loop.
+		seen += len(response.Results)
+		if len(response.Results) < pageSize || seen >= response.Count {
+			break
+		}
 	}
 
-	if len(response.Results) == 0 {
+	if current == nil {
 		return nil, fmt.Errorf(
 			"%w: no deployed item for service item %d", ErrNotFound, serviceItemID,
 		)
-	}
-
-	current := &response.Results[0]
-	for index := range response.Results {
-		if response.Results[index].Version > current.Version {
-			current = &response.Results[index]
-		}
 	}
 	return current, nil
 }

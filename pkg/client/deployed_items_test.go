@@ -3,7 +3,9 @@ package client_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -303,7 +305,7 @@ func TestFindDeployedItemForServiceItem(t *testing.T) { //nolint:funlen
 		assert.Equal(t, 3, item.Version)
 	})
 
-	t.Run("filters by service item and asks for the newest first", func(t *testing.T) {
+	t.Run("filters by service item", func(t *testing.T) {
 		httpmock.Activate()
 		defer httpmock.DeactivateAndReset()
 
@@ -322,7 +324,41 @@ func TestFindDeployedItemForServiceItem(t *testing.T) { //nolint:funlen
 
 		require.NoError(t, err)
 		assert.Contains(t, capturedQuery, "service_item_id=389")
-		assert.Contains(t, capturedQuery, "ordering=-version")
+	})
+
+	t.Run("finds the highest version when the history spans more than one page", func(t *testing.T) {
+		httpmock.Activate()
+		defer httpmock.DeactivateAndReset()
+
+		// The history is longer than one page and, deliberately, unordered: the highest version
+		// sits on the second page. Taking the max over the first page alone - the bug this test
+		// guards - would return the stale v20 as current.
+		var page1 []string
+		for v := 1; v <= 100; v++ {
+			page1 = append(page1, fmt.Sprintf(
+				`{"id":%d,"version":%d,"service_item":"%s"}`, 7000+v, v, serviceItemLink))
+		}
+		current := fmt.Sprintf(
+			`{"id":9999,"version":132,"service_item":"%s"}`, serviceItemLink)
+
+		httpmock.RegisterResponder("GET", deployedItemsRoot+"/",
+			func(req *http.Request) (*http.Response, error) {
+				body := `{"count":101,"results":[` + current + `]}`
+				if req.URL.Query().Get("offset") == "" || req.URL.Query().Get("offset") == "0" {
+					body = `{"count":101,"results":[` + joinJSON(page1) + `]}`
+				}
+				return httpmock.NewStringResponse(200, body), nil
+			})
+
+		nc := newDeployedItemTestClient(t)
+		item, err := nc.FindDeployedItemForServiceItem(
+			context.Background(), client.POVServiceOwner, 389,
+		)
+
+		require.NoError(t, err)
+		require.NotNil(t, item)
+		assert.Equal(t, 132, item.Version, "the current version is on the second page")
+		assert.Equal(t, 9999, item.ID)
 	})
 
 	t.Run("returns ErrNotFound when nothing is deployed", func(t *testing.T) {
@@ -615,4 +651,9 @@ func TestDeleteDeployedItem(t *testing.T) {
 		require.Error(t, err)
 		require.ErrorIs(t, err, client.ErrNotFound)
 	})
+}
+
+// joinJSON joins pre-rendered JSON object literals with commas, for building a results array.
+func joinJSON(parts []string) string {
+	return strings.Join(parts, ",")
 }
